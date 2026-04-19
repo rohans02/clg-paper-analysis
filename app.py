@@ -149,6 +149,16 @@ def _init_state() -> None:
         if key not in st.session_state:
             st.session_state[key] = value
 
+    # Restore auth from query params (survives page refresh)
+    if not st.session_state.get("auth_is_authenticated"):
+        qp = st.query_params
+        qp_role = qp.get("role")
+        qp_user = qp.get("user")
+        if qp_role and qp_user:
+            st.session_state["auth_is_authenticated"] = True
+            st.session_state["auth_role"] = qp_role
+            st.session_state["auth_username"] = qp_user
+
 
 def _normalize_faculty_name(name: str) -> str:
     return " ".join(name.strip().split())
@@ -173,6 +183,7 @@ def _logout() -> None:
     st.session_state["auth_is_authenticated"] = False
     st.session_state["auth_role"] = None
     st.session_state["auth_username"] = None
+    st.query_params.clear()
     _log_info("User logged out.")
 
 
@@ -206,6 +217,8 @@ def _auth_sidebar() -> tuple[str, str] | None:
                 st.session_state["auth_is_authenticated"] = True
                 st.session_state["auth_role"] = "faculty"
                 st.session_state["auth_username"] = normalized_name
+                st.query_params["role"] = "faculty"
+                st.query_params["user"] = normalized_name
                 _log_info(f"Faculty login success: {normalized_name}")
                 st.rerun()
 
@@ -242,6 +255,8 @@ def _auth_sidebar() -> tuple[str, str] | None:
                     st.session_state["auth_username"] = "admin"
                     st.session_state["admin_failed_attempts"] = 0
                     st.session_state["admin_lockout_until"] = 0.0
+                    st.query_params["role"] = "admin"
+                    st.query_params["user"] = "admin"
                     _log_info("Admin login success.")
                     st.rerun()
 
@@ -334,7 +349,7 @@ def _dashboard_page() -> None:
         my_row = faculty_df[faculty_df["faculty_name"] == username]
         if not my_row.empty:
             r = my_row.iloc[0]
-            st.subheader(f"Welcome, {username}! 👋")
+            st.subheader(f"Welcome, {username}!")
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("My Publications", int(r.get("total_publications", 0)))
             m2.metric("Journals", int(r.get("journal_count", 0)))
@@ -865,7 +880,6 @@ def _faculty_new_submission() -> None:
 
         confidence = float(st.session_state.get("ingestion_confidence", 0.0))
         warnings = st.session_state.get("ingestion_warnings", [])
-        st.info(f"Confidence score: {confidence}")
         for warning in warnings:
             st.warning(warning)
 
@@ -976,7 +990,7 @@ def _admin_review_queue() -> None:
                     "status": row.status,
                     "title": payload.get("title"),
                     "faculty_name": payload.get("faculty_name"),
-                    "confidence": row.confidence_score,
+
                     "created_at": row.created_at,
                 }
             )
