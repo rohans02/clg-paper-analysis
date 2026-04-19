@@ -1,0 +1,119 @@
+{
+  "source_file": "R:\\Github\\clg-paper-analysis\\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx",
+  "db_backup_file": "R:\\Github\\clg-paper-analysis\\backups\\publication_manager_20260419T065538Z.db",
+  "started_at_utc": "2026-04-19T06:55:38.632554+00:00",
+  "ended_at_utc": "2026-04-19T06:55:39.061851+00:00",
+  "rows_read": 1163,
+  "rows_imported": 30,
+  "rows_skipped": 1133,
+  "sheet_summary": {
+    "Scopus Journal": {
+      "read": 218,
+      "imported": 7,
+      "skipped": 211
+    },
+    "Scopus Conference": {
+      "read": 223,
+      "imported": 17,
+      "skipped": 206
+    },
+    "International Conference": {
+      "read": 17,
+      "imported": 0,
+      "skipped": 17
+    },
+    "National Conference": {
+      "read": 17,
+      "imported": 0,
+      "skipped": 17
+    },
+    "WoS Journal": {
+      "read": 218,
+      "imported": 1,
+      "skipped": 217
+    },
+    "WoS Conference": {
+      "read": 17,
+      "imported": 0,
+      "skipped": 17
+    },
+    "Peer Reviewed Journal": {
+      "read": 17,
+      "imported": 1,
+      "skipped": 16
+    },
+    "UGC Care Journal": {
+      "read": 218,
+      "imported": 1,
+      "skipped": 217
+    },
+    "Book ChapterBook": {
+      "read": 218,
+      "imported": 3,
+      "skipped": 215
+    }
+  },
+  "skip_reasons": {
+    "unsupported_sheet": 1,
+    "invalid_serial": 0,
+    "missing_required": 114,
+    "title_looks_like_date": 0,
+    "empty_row": 1019
+  },
+  "quality_checks": [
+    {
+      "name": "total_publications_gt_zero",
+      "pass": true,
+      "value": 30,
+      "details": "Publications count after import."
+    },
+    {
+      "name": "required_faculty_name_complete",
+      "pass": true,
+      "value": 0,
+      "details": "Rows missing faculty_name."
+    },
+    {
+      "name": "required_title_complete",
+      "pass": true,
+      "value": 0,
+      "details": "Rows missing title."
+    },
+    {
+      "name": "required_category_complete",
+      "pass": true,
+      "value": 0,
+      "details": "Rows missing category."
+    },
+    {
+      "name": "required_publication_type_complete",
+      "pass": true,
+      "value": 0,
+      "details": "Rows missing publication_type."
+    },
+    {
+      "name": "conference_title_not_date_range",
+      "pass": true,
+      "value": 0,
+      "details": "Conference titles should not be date ranges."
+    },
+    {
+      "name": "quartile_only_for_journal",
+      "pass": true,
+      "value": 0,
+      "details": "Non-journal records should not have quartile."
+    },
+    {
+      "name": "national_international_expected_values",
+      "pass": true,
+      "value": 0,
+      "details": "Allowed values: ['International', 'National']."
+    },
+    {
+      "name": "doi_normalized_consistency",
+      "pass": true,
+      "value": 0,
+      "details": "Records with DOI must have normalized DOI."
+    }
+  ]
+}

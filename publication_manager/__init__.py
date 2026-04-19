@@ -1,0 +1,2 @@
+"""Faculty Publication Manager package."""
+

@@ -1,0 +1,34 @@
+2026-04-17 20:10:22,152 INFO Filtered export triggered by faculty_user with 30 rows.
+2026-04-17 20:10:52,577 INFO Filtered export triggered by faculty_user with 1 rows.
+2026-04-17 20:11:08,867 INFO Filtered export triggered by faculty_user with 5 rows.
+2026-04-17 20:11:35,945 INFO Full export triggered by faculty_user with 30 rows.
+2026-04-17 20:12:17,671 INFO System checks executed: failed=0
+2026-04-17 20:13:50,713 INFO Filtered export triggered by  with 1 rows.
+2026-04-18 23:31:26,775 INFO Official-format export triggered by faculty_user with 30 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-18 23:31:46,065 INFO Official-format export triggered by faculty_user with 30 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-18 23:31:59,057 INFO Official-format export triggered by faculty_user with 30 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-18 23:32:32,316 INFO Official-format export triggered by faculty_user with 30 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-18 23:32:35,802 INFO Filtered export triggered by faculty_user with 5 rows.
+2026-04-18 23:33:25,421 INFO Official-format export triggered by faculty_user with 30 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-18 23:34:24,161 INFO Filtered export triggered by faculty_user with 5 rows.
+2026-04-18 23:36:31,958 INFO Official-format export triggered by faculty_user with 30 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-18 23:36:54,095 INFO Official-format export triggered by faculty_user with 30 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-18 23:39:30,282 INFO Official-format filtered export triggered by faculty_user with 1 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-19 11:18:37,686 INFO Migration rebuild run by faculty_user: imported=30, skipped=1151
+2026-04-19 11:23:16,455 INFO Official-format filtered export triggered by faculty_user with 3 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-19 11:31:55,217 INFO Migration rebuild run by faculty_user: imported=30, skipped=1151
+2026-04-19 11:32:01,178 INFO System checks executed: failed=0
+2026-04-19 11:32:09,013 INFO Migration rebuild run by faculty_user: imported=30, skipped=1151
+2026-04-19 12:14:17,129 INFO Migration rebuild run by faculty_user: imported=30, skipped=1133
+2026-04-19 12:14:20,750 INFO System checks executed: failed=0
+2026-04-19 12:14:23,385 INFO System checks executed: failed=0
+2026-04-19 12:25:39,068 INFO Migration rebuild run by faculty_user: imported=30, skipped=1133
+2026-04-19 12:25:42,558 INFO System checks executed: failed=0
+2026-04-19 12:53:17,530 INFO Admin login success.
+2026-04-19 12:55:20,283 INFO Official-format filtered export triggered by admin with 7 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-19 12:58:44,728 INFO Admin login success.
+2026-04-19 12:59:08,303 INFO Official-format filtered export triggered by admin with 7 rows using template R:\Github\clg-paper-analysis\Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx.
+2026-04-19 18:01:49,628 INFO Faculty login success: Mr. Rohan Shinde
+2026-04-19 18:04:16,050 INFO Faculty login success: Mr. Rohan Shinde
+2026-04-19 18:11:33,251 INFO Faculty login success: Mr. Rohan Shinde
+2026-04-19 18:12:07,504 INFO User logged out.
