@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import time
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import pandas as pd
@@ -74,6 +75,8 @@ def _init_state() -> None:
         "ingestion_source_input": None,
         "admin_submission_id": None,
         "migration_report": None,
+        "migration_upload_bytes": None,
+        "migration_upload_name": None,
         "system_checks_df": None,
         "system_checks_summary": None,
         "last_export_payload": None,
@@ -774,18 +777,43 @@ def _admin_submission_detail(submission_id: int, username: str) -> None:
 
 @st.dialog("Confirm Rebuild Migration")
 def _migration_confirm_dialog(excel_path: str, username: str) -> None:
+    upload_bytes = st.session_state.get("migration_upload_bytes")
+    upload_name = st.session_state.get("migration_upload_name")
+    use_upload = isinstance(upload_bytes, (bytes, bytearray)) and len(upload_bytes) > 0
+    source_display = str(upload_name or "uploaded_workbook.xlsx") if use_upload else excel_path
+
     st.warning("This will backup the DB, wipe `publications`, and reimport from Excel.")
+    st.caption(f"Source workbook: {source_display}")
     if st.button("Confirm Rebuild", type="primary"):
-        with session_scope(DB_PATH) as session:
-            report = rebuild_publications_from_excel(
-                session=session,
-                db_path=DB_PATH,
-                excel_path=excel_path,
-                status_path=MIGRATION_STATUS_PATH,
-            )
+        if not source_display.strip():
+            st.error("Provide an Excel file path or upload a workbook.")
+            return
+
+        temp_excel_path: str | None = None
+        selected_excel_path = excel_path
+        try:
+            if use_upload:
+                with NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+                    tmp.write(bytes(upload_bytes))
+                    temp_excel_path = tmp.name
+                selected_excel_path = temp_excel_path
+
+            with session_scope(DB_PATH) as session:
+                report = rebuild_publications_from_excel(
+                    session=session,
+                    db_path=DB_PATH,
+                    excel_path=selected_excel_path,
+                    status_path=MIGRATION_STATUS_PATH,
+                )
+        finally:
+            if temp_excel_path and Path(temp_excel_path).exists():
+                Path(temp_excel_path).unlink(missing_ok=True)
+
         st.session_state["migration_report"] = report
         _log_info(f"Migration rebuild run by {username}: imported={report.rows_imported}, skipped={report.rows_skipped}")
         st.success("Migration rebuild completed.")
+        st.session_state["migration_upload_bytes"] = None
+        st.session_state["migration_upload_name"] = None
         st.rerun()
 
 
@@ -793,8 +821,19 @@ def _admin_migration_page() -> None:
     st.header("Rebuild Publications from Excel")
     username = st.session_state["auth_username"]
     excel_path = st.text_input("Excel File Path", value=str(Path(DEFAULT_EXCEL).resolve()))
+    uploaded_workbook = st.file_uploader("Or Upload Excel Workbook", type=["xlsx"], key="migration_uploaded_workbook")
+
+    if uploaded_workbook is not None:
+        st.session_state["migration_upload_bytes"] = uploaded_workbook.getvalue()
+        st.session_state["migration_upload_name"] = uploaded_workbook.name
+        st.caption(f"Uploaded workbook selected: {uploaded_workbook.name}")
+
     if st.button("Rebuild Publications (Backup + Wipe + Reimport)", type="primary"):
-        _migration_confirm_dialog(excel_path, username)
+        has_upload = bool(st.session_state.get("migration_upload_bytes"))
+        if not has_upload and not excel_path.strip():
+            st.error("Provide an Excel file path or upload a workbook.")
+            return
+        _migration_confirm_dialog(excel_path.strip(), username)
 
     report = st.session_state.get("migration_report")
     if report:
