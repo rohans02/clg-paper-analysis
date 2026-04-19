@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import hmac
 import logging
 import os
@@ -10,18 +10,29 @@ import time
 from tempfile import NamedTemporaryFile
 from typing import Any
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from streamlit import column_config
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from publication_manager.db import init_db, session_scope
 from publication_manager.enums import InputMethod, SubmissionStatus
 from publication_manager.exporter import export_official_format_xlsx
 from publication_manager.ingestion import ingest_source
 from publication_manager.migration import MIGRATION_STATUS_PATH, SHEET_CONFIGS, rebuild_publications_from_excel
-from publication_manager.models import PendingSubmission, ReviewAction
-from publication_manager.normalization import normalize_doi
+from publication_manager.models import (
+    PendingSubmission,
+    Publication,
+    PublicationBookDetails,
+    PublicationConferenceDetails,
+    PublicationCore,
+    PublicationJournalDetails,
+    PublicationSourceCell,
+    PublicationSourceRow,
+    ReviewAction,
+)
+from publication_manager.normalization import normalize_doi, parse_date
 from publication_manager.query import (
     PublicationFilters,
     get_dashboard_metrics,
@@ -34,12 +45,46 @@ from publication_manager.workflow import approve_submission, create_submission, 
 
 DB_PATH = "publication_manager.db"
 DEFAULT_EXCEL = "Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx"
+APP_LOG_PATH = "app.log"
 ADMIN_PASSWORD_ENV = "APP_ADMIN_PASSWORD"
+DB_PATH_ENV = "APP_DB_PATH"
+TEMPLATE_PATH_ENV = "APP_TEMPLATE_PATH"
+LOG_PATH_ENV = "APP_LOG_PATH"
 ADMIN_MAX_FAILED_ATTEMPTS = 5
 ADMIN_LOCKOUT_SECONDS = 300
 FACULTY_NAME_PATTERN = re.compile(
     r"^(?:Dr\. ?(?:Ms\.|Mrs\.|Mr\.)? ?|Ms\. ?|Mr\. ?|Mrs\. ?)[A-Za-z][A-Za-z .'-]{1,}$"
 )
+
+_NAT_INT_OPTIONS = ["", "National", "International"]
+_YESNO_OPTIONS = ["", "Yes", "No"]
+_QUARTILE_OPTIONS = ["", "Q1", "Q2", "Q3", "Q4"]
+_PRESENTED_OPTIONS = ["", "Presented", "Accepted"]
+
+
+def _dropdown(container, label: str, options: list[str], current: str, key: str) -> str:
+    current = current or ""
+    idx = options.index(current) if current in options else 0
+    return container.selectbox(label, options, index=idx, key=key)
+
+
+def _secret_or_env(secret_key: str, env_key: str) -> str | None:
+    try:
+        value = st.secrets.get(secret_key)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    env_value = os.getenv(env_key)
+    return env_value if env_value else None
+
+
+def _resolve_runtime_paths() -> tuple[str, str, str]:
+    base_dir = Path(__file__).resolve().parent
+    db_path = _secret_or_env("DB_PATH", DB_PATH_ENV) or str((base_dir / "publication_manager.db").resolve())
+    template_path = _secret_or_env("TEMPLATE_PATH", TEMPLATE_PATH_ENV) or str((base_dir / DEFAULT_EXCEL).resolve())
+    log_path = _secret_or_env("LOG_PATH", LOG_PATH_ENV) or str((base_dir / "app.log").resolve())
+    return db_path, template_path, log_path
 
 
 def _setup_logging() -> None:
@@ -47,10 +92,20 @@ def _setup_logging() -> None:
     if logger.handlers:
         return
     logger.setLevel(logging.INFO)
-    handler = logging.FileHandler("app.log", encoding="utf-8")
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    try:
+        log_file = Path(APP_LOG_PATH)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except Exception:
+        logger.warning("File logging unavailable; continuing with stdout logging only.")
 
 
 def _log_info(message: str) -> None:
@@ -269,9 +324,24 @@ def _reset_filters() -> None:
 def _dashboard_page() -> None:
     st.title("Faculty Publication Manager")
     username = st.session_state["auth_username"]
+    role = st.session_state["auth_role"]
     with session_scope(DB_PATH) as session:
         metrics = get_dashboard_metrics(session)
         faculty_df = get_faculty_analysis_df(session)
+
+    # Personalized faculty greeting
+    if role == "faculty" and not faculty_df.empty:
+        my_row = faculty_df[faculty_df["faculty_name"] == username]
+        if not my_row.empty:
+            r = my_row.iloc[0]
+            st.subheader(f"Welcome, {username}! 👋")
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("My Publications", int(r.get("total_publications", 0)))
+            m2.metric("Journals", int(r.get("journal_count", 0)))
+            m3.metric("Conferences", int(r.get("conference_count", 0)))
+            m4.metric("Book Chapters", int(r.get("book_chapter_count", 0)))
+            m5.metric("Pending", int(r.get("pending_count", 0)))
+            st.divider()
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total Publications", metrics["total_publications"])
@@ -279,6 +349,43 @@ def _dashboard_page() -> None:
     c3.metric("Missing DOI", metrics["data_health"]["missing_doi_count"])
     c4.metric("Missing Pub Date", metrics["data_health"]["missing_pub_date_count"])
     c5.metric("Manual Cleanup Flags", metrics["data_health"]["manual_cleanup_count"])
+
+    # Charts
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        st.subheader("Publications by Category")
+        if not metrics["by_category"].empty:
+            donut = (
+                alt.Chart(metrics["by_category"])
+                .mark_arc(innerRadius=50, outerRadius=120)
+                .encode(
+                    theta=alt.Theta("count:Q"),
+                    color=alt.Color("category:N", legend=alt.Legend(title="Category")),
+                    tooltip=["category:N", "count:Q"],
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(donut, use_container_width=True)
+        else:
+            st.info("No category data available.")
+
+    with chart_col2:
+        st.subheader("Publications by Year")
+        if not metrics["by_year"].empty:
+            year_bar = (
+                alt.Chart(metrics["by_year"])
+                .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+                .encode(
+                    x=alt.X("year:O", title="Year"),
+                    y=alt.Y("count:Q", title="Publications"),
+                    color=alt.value("#1565C0"),
+                    tooltip=["year:O", "count:Q"],
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(year_bar, use_container_width=True)
+        else:
+            st.info("No year data available.")
 
     st.subheader("Faculty-wise Analysis")
     if faculty_df.empty:
@@ -301,10 +408,97 @@ def _dashboard_page() -> None:
             st.line_chart(drilldown["trend"].set_index("year")["count"])
         _safe_dataframe(drilldown["latest"], "No latest records for selected faculty.")
 
-    st.subheader("By Category")
-    _safe_dataframe(metrics["by_category"])
-    st.subheader("By Year")
-    _safe_dataframe(metrics["by_year"])
+
+@st.dialog("Edit Publication", width="large")
+def _edit_publication_dialog(pub_id: int) -> None:
+    with session_scope(DB_PATH) as read_session:
+        core = read_session.get(PublicationCore, pub_id)
+        legacy = read_session.get(Publication, pub_id) if not core else None
+        record = core or legacy
+        if not record:
+            st.error(f"Publication {pub_id} not found.")
+            return
+        d = {
+            "title": record.title or "",
+            "faculty_name": record.faculty_name or "",
+            "authors": record.authors or "",
+            "publication_name": record.publication_name or "",
+            "doi": record.doi or "",
+            "pub_date": str(record.pub_date or ""),
+            "paper_url": record.paper_url or "",
+            "category": record.category or "",
+            "publication_type": record.publication_type or "",
+            "venue": record.venue or "",
+            "indexing_source": record.indexing_source or "",
+            "national_international": record.national_international or "",
+        }
+    c1, c2 = st.columns(2)
+    new_title = c1.text_input("Title", value=d["title"], key=f"et_{pub_id}")
+    new_faculty = c2.text_input("Faculty Name", value=d["faculty_name"], key=f"ef_{pub_id}")
+    c1, c2 = st.columns(2)
+    new_authors = c1.text_area("Authors", value=d["authors"], key=f"ea_{pub_id}", height=80)
+    new_pub_name = c2.text_input("Publication Name", value=d["publication_name"], key=f"ep_{pub_id}")
+    c1, c2 = st.columns(2)
+    new_doi = c1.text_input("DOI", value=d["doi"], key=f"ed_{pub_id}")
+    new_pub_date = c2.text_input("Publication Date (YYYY-MM-DD)", value=d["pub_date"], key=f"epd_{pub_id}")
+    c1, c2 = st.columns(2)
+    new_paper_url = c1.text_input("Paper URL", value=d["paper_url"], key=f"eu_{pub_id}")
+    new_venue = c2.text_input("Venue", value=d["venue"], key=f"ev_{pub_id}")
+    c1, c2 = st.columns(2)
+    new_category = c1.text_input("Category", value=d["category"], key=f"ec_{pub_id}")
+    new_pub_type = c2.text_input("Publication Type", value=d["publication_type"], key=f"ept_{pub_id}")
+    c1, c2 = st.columns(2)
+    new_indexing = c1.text_input("Indexing Source", value=d["indexing_source"], key=f"ei_{pub_id}")
+    new_nat_int = _dropdown(c2, "National/International", _NAT_INT_OPTIONS, d["national_international"], f"eni_{pub_id}")
+
+    if st.button("Save Changes", type="primary", key=f"save_{pub_id}"):
+        with session_scope(DB_PATH) as session:
+            record = session.get(PublicationCore, pub_id) or session.get(Publication, pub_id)
+            if not record:
+                st.error("Publication not found.")
+                return
+            record.title = new_title
+            record.faculty_name = new_faculty
+            record.authors = new_authors
+            record.publication_name = new_pub_name
+            record.doi = new_doi
+            record.doi_normalized = normalize_doi(new_doi)
+            record.pub_date = parse_date(new_pub_date)
+            record.paper_url = new_paper_url
+            record.venue = new_venue
+            record.category = new_category
+            record.publication_type = new_pub_type
+            record.indexing_source = new_indexing
+            record.national_international = new_nat_int or None
+            record.updated_at = datetime.now(timezone.utc)
+        _log_info(f"Publication {pub_id} updated by admin.")
+        st.success(f"Publication {pub_id} updated successfully!")
+        st.rerun()
+
+
+@st.dialog("Confirm Delete")
+def _delete_publication_dialog(pub_id: int) -> None:
+    st.warning(f"⚠️ Are you sure you want to **permanently delete** Publication #{pub_id}?")
+    st.caption("This action cannot be undone.")
+    if st.button("Confirm Delete", type="primary", key=f"confirm_del_{pub_id}"):
+        with session_scope(DB_PATH) as session:
+            core = session.get(PublicationCore, pub_id)
+            if core:
+                session.execute(delete(PublicationJournalDetails).where(PublicationJournalDetails.publication_id == pub_id))
+                session.execute(delete(PublicationConferenceDetails).where(PublicationConferenceDetails.publication_id == pub_id))
+                session.execute(delete(PublicationBookDetails).where(PublicationBookDetails.publication_id == pub_id))
+                session.execute(delete(PublicationSourceCell).where(PublicationSourceCell.publication_id == pub_id))
+                session.execute(delete(PublicationSourceRow).where(PublicationSourceRow.publication_id == pub_id))
+                session.delete(core)
+            legacy = session.get(Publication, pub_id)
+            if legacy:
+                session.delete(legacy)
+            if not core and not legacy:
+                st.error("Publication not found.")
+                return
+        _log_info(f"Publication {pub_id} deleted by admin.")
+        st.success(f"Publication {pub_id} deleted.")
+        st.rerun()
 
 
 def _publications_page() -> None:
@@ -325,37 +519,45 @@ def _publications_page() -> None:
             _reset_filters()
             st.rerun()
         if action == "Export Full DB (Official Format)":
-            payload, metadata = export_official_format_xlsx(
-                session,
-                username,
-                template_path=str(Path(DEFAULT_EXCEL).resolve()),
-                filters=None,
-            )
-            st.session_state["last_export_payload"] = {
-                "filename": "publications_official_full.xlsx",
-                "bytes": payload,
-                "rows": metadata["row_count"],
-            }
-            _log_info(
-                f"Official-format full export triggered by {username} with {metadata['row_count']} rows "
-                f"using template {metadata['template_path']}."
-            )
+            try:
+                payload, metadata = export_official_format_xlsx(
+                    session,
+                    username,
+                    template_path=DEFAULT_EXCEL,
+                    filters=None,
+                )
+                st.session_state["last_export_payload"] = {
+                    "filename": "publications_official_full.xlsx",
+                    "bytes": payload,
+                    "rows": metadata["row_count"],
+                }
+                _log_info(
+                    f"Official-format full export triggered by {username} with {metadata['row_count']} rows "
+                    f"using template {metadata['template_path']}."
+                )
+            except FileNotFoundError as exc:
+                st.error(str(exc))
+                _log_error(f"Official export failed: {exc}")
         if action == "Export Filtered (Official Format)":
-            payload, metadata = export_official_format_xlsx(
-                session,
-                username,
-                template_path=str(Path(DEFAULT_EXCEL).resolve()),
-                filters=filters,
-            )
-            st.session_state["last_export_payload"] = {
-                "filename": "publications_official_filtered.xlsx",
-                "bytes": payload,
-                "rows": metadata["row_count"],
-            }
-            _log_info(
-                f"Official-format filtered export triggered by {username} with {metadata['row_count']} rows "
-                f"using template {metadata['template_path']}."
-            )
+            try:
+                payload, metadata = export_official_format_xlsx(
+                    session,
+                    username,
+                    template_path=DEFAULT_EXCEL,
+                    filters=filters,
+                )
+                st.session_state["last_export_payload"] = {
+                    "filename": "publications_official_filtered.xlsx",
+                    "bytes": payload,
+                    "rows": metadata["row_count"],
+                }
+                _log_info(
+                    f"Official-format filtered export triggered by {username} with {metadata['row_count']} rows "
+                    f"using template {metadata['template_path']}."
+                )
+            except FileNotFoundError as exc:
+                st.error(str(exc))
+                _log_error(f"Official filtered export failed: {exc}")
 
         if not filtered_df.empty:
             st.dataframe(
@@ -382,6 +584,36 @@ def _publications_page() -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
             )
+
+    # Publication detail view
+    if not filtered_df.empty:
+        st.divider()
+        pub_view_id = st.number_input("Publication ID", min_value=1, step=1, key="view_pub_id_input")
+        if st.button("📄 View Details", key="view_pub_details_btn"):
+            st.session_state["view_pub_id"] = int(pub_view_id)
+
+        view_id = st.session_state.get("view_pub_id")
+        if view_id:
+            pub_row = filtered_df[filtered_df["id"] == view_id]
+            if not pub_row.empty:
+                with st.expander(f"📄 Publication #{view_id} — Full Details", expanded=True):
+                    row = pub_row.iloc[0]
+                    detail_cols = st.columns(2)
+                    items = [(col, row[col]) for col in pub_row.columns if pd.notna(row[col]) and str(row[col]).strip()]
+                    for i, (col, val) in enumerate(items):
+                        detail_cols[i % 2].markdown(f"**{col.replace('_', ' ').title()}**: {val}")
+            else:
+                st.warning(f"Publication #{view_id} not in current filtered view. Try resetting filters.")
+
+        # Admin: Edit & Delete
+        if st.session_state["auth_role"] == "admin":
+            st.divider()
+            st.subheader("🔧 Manage Publication")
+            manage_col1, manage_col2 = st.columns(2)
+            if manage_col1.button("✏️ Edit Publication", key="edit_pub_btn", use_container_width=True):
+                _edit_publication_dialog(int(pub_view_id))
+            if manage_col2.button("🗑️ Delete Publication", key="delete_pub_btn", type="primary", use_container_width=True):
+                _delete_publication_dialog(int(pub_view_id))
 
 
 def _faculty_new_submission() -> None:
@@ -449,71 +681,90 @@ def _faculty_new_submission() -> None:
         payload["indexing_source"] = payload.get("indexing_source") or category
 
         st.caption(f"Category: {category} | Sub Category: {sub_category}")
-        payload["faculty_name"] = st.text_input(
+        c1, c2 = st.columns(2)
+        payload["faculty_name"] = c1.text_input(
             "Faculty Name",
             value=payload.get("faculty_name", faculty_name),
             key="faculty_new_name_review",
         )
-        payload["title"] = st.text_input("Title", value=payload.get("title", ""), key="faculty_review_title")
-        payload["publication_name"] = st.text_input(
+        payload["title"] = c2.text_input("Title", value=payload.get("title", ""), key="faculty_review_title")
+
+        c1, c2 = st.columns(2)
+        payload["publication_name"] = c1.text_input(
             "Journal/Conference/Book Name",
             value=payload.get("publication_name", payload.get("venue", "")),
             key="faculty_review_publication_name",
         )
-        payload["authors"] = st.text_area("Authors", value=payload.get("authors", ""), key="faculty_review_authors")
-        payload["pub_date"] = st.text_input(
-            "Publication Date",
-            value=str(payload.get("pub_date", "")),
-            key="faculty_review_pub_date",
+        payload["authors"] = c2.text_area(
+            "Authors",
+            value=payload.get("authors", ""),
+            key="faculty_review_authors",
+            height=80,
         )
-        payload["doi"] = st.text_input("DOI", value=payload.get("doi", ""), key="faculty_review_doi")
-        payload["paper_url"] = st.text_input(
+
+        c1, c2 = st.columns(2)
+        pub_date_default = parse_date(payload.get("pub_date"))
+        selected_pub_date = c1.date_input(
+            "Publication Date",
+            value=pub_date_default,
+            key="faculty_review_pub_date",
+            format="YYYY-MM-DD",
+        )
+        payload["pub_date"] = selected_pub_date.isoformat() if selected_pub_date else None
+        payload["doi"] = c2.text_input("DOI", value=payload.get("doi", ""), key="faculty_review_doi")
+
+        c1, c2 = st.columns(2)
+        payload["paper_url"] = c1.text_input(
             "Paper URL",
             value=payload.get("paper_url", source_input),
             key="faculty_review_paper_url",
         )
-        payload["indexing_source"] = st.text_input(
+        payload["indexing_source"] = c2.text_input(
             "Indexing Source",
             value=payload.get("indexing_source", category),
             key="faculty_review_indexing_source",
         )
 
         if sub_category in ("Journal", "Conference"):
-            payload["national_international"] = st.text_input(
-                "National/International",
-                value=payload.get("national_international", ""),
-                key="faculty_review_nat_int",
+            payload["national_international"] = _dropdown(
+                st, "National/International", _NAT_INT_OPTIONS,
+                payload.get("national_international", ""), "faculty_review_nat_int",
             )
 
         if sub_category == "Journal":
-            payload["quartile"] = st.text_input("Quartile", value=payload.get("quartile", ""), key="faculty_review_quartile")
-            payload["volume_issue"] = st.text_input(
+            c1, c2 = st.columns(2)
+            payload["quartile"] = _dropdown(c1, "Quartile", _QUARTILE_OPTIONS, payload.get("quartile", ""), "faculty_review_quartile")
+            payload["issn_isbn"] = c2.text_input("ISSN", value=payload.get("issn_isbn", ""), key="faculty_review_issn")
+
+            c1, c2 = st.columns(2)
+            payload["volume_issue"] = c1.text_input(
                 "Volume/Issue",
                 value=payload.get("volume_issue", ""),
                 key="faculty_review_volume_issue_journal",
             )
-            payload["official_venue_url"] = st.text_input(
+            payload["official_venue_url"] = c2.text_input(
                 "Journal Official URL",
                 value=payload.get("official_venue_url", ""),
                 key="faculty_review_official_url_journal",
             )
-            payload["research_published_flag"] = st.text_input(
-                "Research Published (Yes/No)",
-                value=payload.get("research_published_flag", ""),
-                key="faculty_review_published_journal",
+
+            c1, c2 = st.columns(2)
+            payload["research_published_flag"] = _dropdown(
+                c1, "Research Published", _YESNO_OPTIONS,
+                payload.get("research_published_flag", ""), "faculty_review_published_journal",
             )
-            payload["indexing_flag"] = st.text_input(
-                "Indexing Flag",
-                value=payload.get("indexing_flag", ""),
-                key="faculty_review_indexing_flag_journal",
+            payload["indexing_flag"] = _dropdown(
+                c2, "Indexing Flag", _YESNO_OPTIONS,
+                payload.get("indexing_flag", ""), "faculty_review_indexing_flag_journal",
             )
-            payload["indexing_proof"] = st.text_input(
+
+            c1, c2 = st.columns(2)
+            payload["indexing_proof"] = c1.text_input(
                 "Indexing Proof",
                 value=payload.get("indexing_proof", ""),
                 key="faculty_review_indexing_proof_journal",
             )
-            payload["issn_isbn"] = st.text_input("ISSN", value=payload.get("issn_isbn", ""), key="faculty_review_issn")
-            payload["attachment_ref"] = st.text_input(
+            payload["attachment_ref"] = c2.text_input(
                 "Attachment Reference",
                 value=payload.get("attachment_ref", ""),
                 key="faculty_review_attachment_journal",
@@ -521,48 +772,55 @@ def _faculty_new_submission() -> None:
             payload["venue"] = payload.get("venue") or payload.get("publication_name")
 
         elif sub_category == "Conference":
-            payload["venue"] = st.text_input("Venue", value=payload.get("venue", ""), key="faculty_review_venue_conference")
-            payload["conference_date"] = st.text_input(
+            c1, c2 = st.columns(2)
+            payload["venue"] = c1.text_input("Venue", value=payload.get("venue", ""), key="faculty_review_venue_conference")
+            payload["conference_date"] = c2.text_input(
                 "Conference Date",
                 value=payload.get("conference_date", ""),
                 key="faculty_review_conference_date",
             )
-            payload["presented_accepted_flag"] = st.text_input(
-                "Presented/Accepted",
-                value=payload.get("presented_accepted_flag", ""),
-                key="faculty_review_presented_accepted",
+
+            c1, c2 = st.columns(2)
+            payload["presented_accepted_flag"] = _dropdown(
+                c1, "Presented/Accepted", _PRESENTED_OPTIONS,
+                payload.get("presented_accepted_flag", ""), "faculty_review_presented_accepted",
             )
-            payload["volume_issue"] = st.text_input(
+            payload["issn_isbn"] = c2.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key="faculty_review_issn_isbn_conf")
+
+            c1, c2 = st.columns(2)
+            payload["volume_issue"] = c1.text_input(
                 "Volume/Issue",
                 value=payload.get("volume_issue", ""),
                 key="faculty_review_volume_issue_conference",
             )
-            payload["official_venue_url"] = st.text_input(
+            payload["official_venue_url"] = c2.text_input(
                 "Conference Official URL",
                 value=payload.get("official_venue_url", ""),
                 key="faculty_review_official_url_conference",
             )
-            payload["research_published_flag"] = st.text_input(
-                "Research Published (Yes/No)",
-                value=payload.get("research_published_flag", ""),
-                key="faculty_review_published_conference",
+
+            c1, c2 = st.columns(2)
+            payload["research_published_flag"] = _dropdown(
+                c1, "Research Published", _YESNO_OPTIONS,
+                payload.get("research_published_flag", ""), "faculty_review_published_conference",
             )
-            payload["indexing_flag"] = st.text_input(
-                "Indexing Flag",
-                value=payload.get("indexing_flag", ""),
-                key="faculty_review_indexing_flag_conference",
+            payload["indexing_flag"] = _dropdown(
+                c2, "Indexing Flag", _YESNO_OPTIONS,
+                payload.get("indexing_flag", ""), "faculty_review_indexing_flag_conference",
             )
-            payload["indexing_proof"] = st.text_input(
+
+            c1, c2 = st.columns(2)
+            payload["indexing_proof"] = c1.text_input(
                 "Indexing Proof",
                 value=payload.get("indexing_proof", ""),
                 key="faculty_review_indexing_proof_conference",
             )
-            payload["issn_isbn"] = st.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key="faculty_review_issn_isbn_conf")
-            payload["certificate_ref"] = st.text_input(
+            payload["certificate_ref"] = c2.text_input(
                 "Certificate Reference",
                 value=payload.get("certificate_ref", ""),
                 key="faculty_review_certificate_ref",
             )
+
             payload["attachment_ref"] = st.text_input(
                 "Attachment Reference",
                 value=payload.get("attachment_ref", ""),
@@ -570,32 +828,38 @@ def _faculty_new_submission() -> None:
             )
 
         elif sub_category == "Book Chapter":
-            payload["publisher"] = st.text_input("Publisher", value=payload.get("publisher", ""), key="faculty_review_publisher")
-            payload["issn_isbn"] = st.text_input("ISBN", value=payload.get("issn_isbn", ""), key="faculty_review_isbn")
-            payload["official_venue_url"] = st.text_input(
+            c1, c2 = st.columns(2)
+            payload["publisher"] = c1.text_input("Publisher", value=payload.get("publisher", ""), key="faculty_review_publisher")
+            payload["issn_isbn"] = c2.text_input("ISBN", value=payload.get("issn_isbn", ""), key="faculty_review_isbn")
+
+            c1, c2 = st.columns(2)
+            payload["official_venue_url"] = c1.text_input(
                 "Book URL",
                 value=payload.get("official_venue_url", ""),
                 key="faculty_review_book_url",
             )
-            payload["book_indexed_ugc"] = st.text_input(
+            payload["attachment_ref"] = c2.text_input(
+                "Attachment Reference",
+                value=payload.get("attachment_ref", ""),
+                key="faculty_review_attachment_book",
+            )
+
+            c1, c2 = st.columns(2)
+            payload["book_indexed_ugc"] = c1.text_input(
                 "Indexed in UGC",
                 value=payload.get("book_indexed_ugc", ""),
                 key="faculty_review_book_ugc",
             )
-            payload["book_indexed_scopus"] = st.text_input(
+            payload["book_indexed_scopus"] = c2.text_input(
                 "Indexed in Scopus",
                 value=payload.get("book_indexed_scopus", ""),
                 key="faculty_review_book_scopus",
             )
+
             payload["book_indexed_wos"] = st.text_input(
                 "Indexed in WoS",
                 value=payload.get("book_indexed_wos", ""),
                 key="faculty_review_book_wos",
-            )
-            payload["attachment_ref"] = st.text_input(
-                "Attachment Reference",
-                value=payload.get("attachment_ref", ""),
-                key="faculty_review_attachment_book",
             )
             payload["venue"] = payload.get("venue") or payload.get("publisher")
 
@@ -729,18 +993,61 @@ def _admin_review_queue() -> None:
 
 def _admin_submission_detail(submission_id: int, username: str) -> None:
     st.subheader(f"Submission Detail: {submission_id}")
+    move_to_review = False
     with session_scope(DB_PATH) as session:
         submission = session.get(PendingSubmission, submission_id)
         if not submission:
             st.error("Submission not found.")
             return
-        if submission.status == SubmissionStatus.SUBMITTED.value and st.button("Move to UNDER_REVIEW"):
-            start_review(session, submission_id, username)
-            _log_info(f"Submission {submission_id} moved to UNDER_REVIEW by {username}.")
-            st.success("Submission moved to UNDER_REVIEW.")
-            st.rerun()
+        if submission.status == SubmissionStatus.SUBMITTED.value:
+            move_to_review = st.button("Move to UNDER_REVIEW")
+            if move_to_review:
+                start_review(session, submission_id, username)
+                _log_info(f"Submission {submission_id} moved to UNDER_REVIEW by {username}.")
 
-        payload = dict(submission.parsed_payload_json)
+    if move_to_review:
+        st.success("Submission moved to UNDER_REVIEW.")
+        st.rerun()
+
+    with session_scope(DB_PATH) as session:
+        submission = session.get(PendingSubmission, submission_id)
+        if not submission:
+            st.error("Submission not found.")
+            return
+
+        payload = dict(submission.parsed_payload_json or {})
+
+        workbook_categories: dict[str, list[str]] = {}
+        for config in SHEET_CONFIGS.values():
+            workbook_categories.setdefault(config.category, [])
+            if config.publication_type not in workbook_categories[config.category]:
+                workbook_categories[config.category].append(config.publication_type)
+
+        category_options = list(workbook_categories.keys())
+        current_category = payload.get("category")
+        if current_category not in category_options:
+            current_category = category_options[0]
+
+        category = st.selectbox(
+            "Category (Workbook)",
+            category_options,
+            index=category_options.index(current_category),
+            key=f"admin_category_{submission_id}",
+        )
+        sub_options = workbook_categories.get(category, ["Journal"])
+        current_sub_category = payload.get("publication_type")
+        if current_sub_category not in sub_options:
+            current_sub_category = sub_options[0]
+        sub_category = st.selectbox(
+            "Sub Category (Workbook)",
+            sub_options,
+            index=sub_options.index(current_sub_category),
+            key=f"admin_sub_category_{submission_id}",
+        )
+
+        payload["category"] = category
+        payload["publication_type"] = sub_category
+
         payload["faculty_name"] = st.text_input("Faculty Name", value=payload.get("faculty_name", ""), key=f"f_{submission_id}")
         payload["title"] = st.text_input("Title", value=payload.get("title", ""), key=f"t_{submission_id}")
         payload["publication_name"] = st.text_input(
@@ -749,16 +1056,129 @@ def _admin_submission_detail(submission_id: int, username: str) -> None:
             key=f"pn_{submission_id}",
         )
         payload["authors"] = st.text_area("Authors", value=payload.get("authors", ""), key=f"a_{submission_id}")
-        payload["category"] = st.text_input("Category", value=payload.get("category", ""), key=f"c_{submission_id}")
-        payload["publication_type"] = st.text_input("Publication Type", value=payload.get("publication_type", ""), key=f"pt_{submission_id}")
-        payload["venue"] = st.text_input("Venue", value=payload.get("venue", ""), key=f"v_{submission_id}")
-        payload["conference_date"] = st.text_input("Conference Date", value=payload.get("conference_date", ""), key=f"cd_{submission_id}")
         payload["pub_date"] = st.text_input("Publication Date", value=str(payload.get("pub_date", "")), key=f"d_{submission_id}")
         payload["doi"] = st.text_input("DOI", value=payload.get("doi", ""), key=f"doi_{submission_id}")
         payload["paper_url"] = st.text_input("Paper URL", value=payload.get("paper_url", ""), key=f"url_{submission_id}")
-        payload["indexing_source"] = st.text_input("Indexing Source", value=payload.get("indexing_source", ""), key=f"idx_{submission_id}")
-        payload["quartile"] = st.text_input("Quartile", value=payload.get("quartile", ""), key=f"q_{submission_id}")
-        payload["issn_isbn"] = st.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
+        payload["indexing_source"] = st.text_input(
+            "Indexing Source",
+            value=payload.get("indexing_source", category),
+            key=f"idx_{submission_id}",
+        )
+
+        if sub_category in ("Journal", "Conference"):
+            payload["national_international"] = _dropdown(
+                st, "National/International", _NAT_INT_OPTIONS,
+                payload.get("national_international", ""), f"nat_{submission_id}",
+            )
+
+        if sub_category == "Journal":
+            payload["quartile"] = _dropdown(st, "Quartile", _QUARTILE_OPTIONS, payload.get("quartile", ""), f"q_{submission_id}")
+            payload["volume_issue"] = st.text_input(
+                "Volume/Issue",
+                value=payload.get("volume_issue", ""),
+                key=f"vj_{submission_id}",
+            )
+            payload["official_venue_url"] = st.text_input(
+                "Journal Official URL",
+                value=payload.get("official_venue_url", ""),
+                key=f"jou_{submission_id}",
+            )
+            payload["research_published_flag"] = _dropdown(
+                st, "Research Published", _YESNO_OPTIONS,
+                payload.get("research_published_flag", ""), f"jpub_{submission_id}",
+            )
+            payload["indexing_flag"] = _dropdown(
+                st, "Indexing Flag", _YESNO_OPTIONS,
+                payload.get("indexing_flag", ""), f"jif_{submission_id}",
+            )
+            payload["indexing_proof"] = st.text_input(
+                "Indexing Proof",
+                value=payload.get("indexing_proof", ""),
+                key=f"jip_{submission_id}",
+            )
+            payload["issn_isbn"] = st.text_input("ISSN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
+            payload["attachment_ref"] = st.text_input(
+                "Attachment Reference",
+                value=payload.get("attachment_ref", ""),
+                key=f"jar_{submission_id}",
+            )
+            payload["venue"] = payload.get("venue") or payload.get("publication_name")
+
+        elif sub_category == "Conference":
+            payload["venue"] = st.text_input("Venue", value=payload.get("venue", ""), key=f"v_{submission_id}")
+            payload["conference_date"] = st.text_input(
+                "Conference Date",
+                value=payload.get("conference_date", ""),
+                key=f"cd_{submission_id}",
+            )
+            payload["presented_accepted_flag"] = _dropdown(
+                st, "Presented/Accepted", _PRESENTED_OPTIONS,
+                payload.get("presented_accepted_flag", ""), f"cpaf_{submission_id}",
+            )
+            payload["volume_issue"] = st.text_input(
+                "Volume/Issue",
+                value=payload.get("volume_issue", ""),
+                key=f"cv_{submission_id}",
+            )
+            payload["official_venue_url"] = st.text_input(
+                "Conference Official URL",
+                value=payload.get("official_venue_url", ""),
+                key=f"cou_{submission_id}",
+            )
+            payload["research_published_flag"] = _dropdown(
+                st, "Research Published", _YESNO_OPTIONS,
+                payload.get("research_published_flag", ""), f"cpub_{submission_id}",
+            )
+            payload["indexing_flag"] = _dropdown(
+                st, "Indexing Flag", _YESNO_OPTIONS,
+                payload.get("indexing_flag", ""), f"cif_{submission_id}",
+            )
+            payload["indexing_proof"] = st.text_input(
+                "Indexing Proof",
+                value=payload.get("indexing_proof", ""),
+                key=f"cip_{submission_id}",
+            )
+            payload["issn_isbn"] = st.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
+            payload["certificate_ref"] = st.text_input(
+                "Certificate Reference",
+                value=payload.get("certificate_ref", ""),
+                key=f"ccr_{submission_id}",
+            )
+            payload["attachment_ref"] = st.text_input(
+                "Attachment Reference",
+                value=payload.get("attachment_ref", ""),
+                key=f"car_{submission_id}",
+            )
+
+        elif sub_category == "Book Chapter":
+            payload["publisher"] = st.text_input("Publisher", value=payload.get("publisher", ""), key=f"bp_{submission_id}")
+            payload["issn_isbn"] = st.text_input("ISBN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
+            payload["official_venue_url"] = st.text_input(
+                "Book URL",
+                value=payload.get("official_venue_url", ""),
+                key=f"bou_{submission_id}",
+            )
+            payload["book_indexed_ugc"] = st.text_input(
+                "Indexed in UGC",
+                value=payload.get("book_indexed_ugc", ""),
+                key=f"bugc_{submission_id}",
+            )
+            payload["book_indexed_scopus"] = st.text_input(
+                "Indexed in Scopus",
+                value=payload.get("book_indexed_scopus", ""),
+                key=f"bsc_{submission_id}",
+            )
+            payload["book_indexed_wos"] = st.text_input(
+                "Indexed in WoS",
+                value=payload.get("book_indexed_wos", ""),
+                key=f"bwos_{submission_id}",
+            )
+            payload["attachment_ref"] = st.text_input(
+                "Attachment Reference",
+                value=payload.get("attachment_ref", ""),
+                key=f"bar_{submission_id}",
+            )
+            payload["venue"] = payload.get("venue") or payload.get("publisher")
 
         c1, c2 = st.columns(2)
         if c1.button("Approve"):
@@ -820,7 +1240,7 @@ def _migration_confirm_dialog(excel_path: str, username: str) -> None:
 def _admin_migration_page() -> None:
     st.header("Rebuild Publications from Excel")
     username = st.session_state["auth_username"]
-    excel_path = st.text_input("Excel File Path", value=str(Path(DEFAULT_EXCEL).resolve()))
+    excel_path = st.text_input("Excel File Path", value=Path(DEFAULT_EXCEL).name)
     uploaded_workbook = st.file_uploader("Or Upload Excel Workbook", type=["xlsx"], key="migration_uploaded_workbook")
 
     if uploaded_workbook is not None:
@@ -859,7 +1279,7 @@ def _admin_system_checks_page() -> None:
     st.header("System Checks")
     if st.button("Run Checks", type="primary"):
         with session_scope(DB_PATH) as session:
-            checks_df, summary = run_system_checks(session, migration_status_path=MIGRATION_STATUS_PATH, log_path="app.log")
+            checks_df, summary = run_system_checks(session, migration_status_path=MIGRATION_STATUS_PATH, log_path=APP_LOG_PATH)
         st.session_state["system_checks_df"] = checks_df
         st.session_state["system_checks_summary"] = summary
         _log_info(f"System checks executed: failed={summary['failed_checks']}")
@@ -904,6 +1324,9 @@ def _render_navigation(role: str) -> None:
 
 
 def main() -> None:
+    global DB_PATH, DEFAULT_EXCEL, APP_LOG_PATH
+    DB_PATH, DEFAULT_EXCEL, APP_LOG_PATH = _resolve_runtime_paths()
+
     st.set_page_config(page_title="Faculty Publication Manager", page_icon=":material/school:", layout="wide")
     _setup_logging()
     init_db(DB_PATH)

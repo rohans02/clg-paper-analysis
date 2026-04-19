@@ -25,6 +25,25 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Streamlit Cloud Notes
+
+- App is cloud-ready, but SQLite data on Streamlit Cloud is ephemeral unless you configure external persistence.
+- Configure secrets in Streamlit Cloud `Secrets` panel when needed:
+
+```toml
+ADMIN_PASSWORD = "your-admin-password"
+# Optional overrides
+DB_PATH = "/tmp/publication_manager.db"
+TEMPLATE_PATH = "Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx"
+LOG_PATH = "/tmp/app.log"
+```
+
+- Equivalent environment variable overrides are also supported:
+	- `APP_ADMIN_PASSWORD`
+	- `APP_DB_PATH`
+	- `APP_TEMPLATE_PATH`
+	- `APP_LOG_PATH`
+
 ## Test
 
 ```bash

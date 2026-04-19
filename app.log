@@ -32,3 +32,41 @@
 2026-04-19 18:04:16,050 INFO Faculty login success: Mr. Rohan Shinde
 2026-04-19 18:11:33,251 INFO Faculty login success: Mr. Rohan Shinde
 2026-04-19 18:12:07,504 INFO User logged out.
+2026-04-19 23:22:35,110 INFO Faculty login success: Dr. Ms. Girija Gireesh Chiddarwar
+2026-04-19 23:23:58,020 INFO User logged out.
+2026-04-19 23:25:33,458 INFO Faculty login success: Dr. Ms. Girija Gireesh Chiddarwar
+2026-04-19 23:25:58,512 INFO User logged out.
+2026-04-19 23:28:49,752 INFO Faculty login success: Dr. Ms. Girija Gireesh Chiddarwar
+2026-04-19 23:29:17,284 INFO User logged out.
+2026-04-19 23:30:22,971 INFO Faculty login success: Mr. Test
+2026-04-19 23:32:48,328 INFO User logged out.
+2026-04-19 23:33:00,207 INFO Faculty login success: Mr. Test
+2026-04-19 23:49:06,898 INFO Faculty login success: Dr. Ms. Girija Gireesh Chiddarwar
+2026-04-19 23:50:51,738 INFO Submission 1 created by Dr. Ms. Girija Gireesh Chiddarwar.
+2026-04-19 23:51:01,909 INFO User logged out.
+2026-04-19 23:52:10,366 INFO Faculty login success: Dr. Ms. Girija Gireesh Chiddarwar
+2026-04-19 23:55:27,015 INFO Faculty login success: Dr. Test Faculty
+2026-04-19 23:57:19,923 INFO Submission 2 created by Dr. Test Faculty.
+2026-04-19 23:57:32,656 INFO User logged out.
+2026-04-19 23:59:04,134 INFO Faculty login success: Dr. Test Faculty
+2026-04-20 00:05:45,128 INFO Faculty login success: Dr. Ms. Girija Gireesh Chiddarwar
+2026-04-20 00:07:20,752 INFO Submission 3 created by Dr. Ms. Girija Gireesh Chiddarwar.
+2026-04-20 00:07:25,864 INFO User logged out.
+2026-04-20 00:07:46,983 INFO Admin login success.
+2026-04-20 00:08:28,811 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:08:45,873 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:09:02,745 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:09:48,153 INFO Admin login success.
+2026-04-20 00:10:22,023 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:10:40,994 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:10:53,974 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:11:14,652 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:12:11,855 INFO Submission 2 moved to UNDER_REVIEW by admin.
+2026-04-20 00:12:12,983 INFO Submission 2 moved to UNDER_REVIEW by admin.
+2026-04-20 00:13:04,970 INFO User logged out.
+2026-04-20 00:15:33,346 INFO Admin login success.
+2026-04-20 00:16:02,542 INFO Submission 1 moved to UNDER_REVIEW by admin.
+2026-04-20 00:17:15,629 INFO Submission 1 approved by admin.
+2026-04-20 00:19:49,937 INFO Admin login success.
+2026-04-20 00:20:15,136 INFO Publication 31 deleted by admin.
+2026-04-20 00:20:34,928 INFO Admin login success.
