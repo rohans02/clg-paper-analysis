@@ -221,37 +221,71 @@ def _auth_sidebar() -> tuple[str, str] | None:
     faculty_tab, admin_tab = st.sidebar.tabs(["Faculty", "Admin"])
 
     with faculty_tab:
-        prefix_choice = st.selectbox(
-            "Prefix",
-            FACULTY_PREFIX_OPTIONS,
-            key="faculty_login_prefix",
+        # Load existing faculty names from DB
+        existing_names: list[str] = []
+        try:
+            with session_scope(DB_PATH) as session:
+                from sqlalchemy import distinct
+                names_from_pub = session.execute(
+                    select(distinct(Publication.faculty_name)).where(Publication.faculty_name.is_not(None))
+                ).scalars().all()
+                names_from_core = session.execute(
+                    select(distinct(PublicationCore.faculty_name)).where(PublicationCore.faculty_name.is_not(None))
+                ).scalars().all()
+                existing_names = sorted(set(names_from_pub) | set(names_from_core))
+        except Exception:
+            pass
+
+        faculty_options = existing_names + ["➕ New Faculty"]
+        selected_faculty = st.selectbox(
+            "Select Faculty",
+            faculty_options,
+            index=len(faculty_options) - 1,
+            key="faculty_login_select",
         )
-        custom_prefix = ""
-        if prefix_choice == "Other":
-            custom_prefix = st.text_input(
-                "Enter Custom Prefix",
-                placeholder="e.g. Assoc. Prof.",
-                key="faculty_login_custom_prefix",
+
+        if selected_faculty == "➕ New Faculty":
+            prefix_choice = st.selectbox(
+                "Prefix",
+                FACULTY_PREFIX_OPTIONS,
+                key="faculty_login_prefix",
             )
-        faculty_name_input = st.text_input(
-            "Full Name (without prefix)",
-            value="",
-            placeholder="Firstname Lastname",
-            help="Enter your full name without any prefix.",
-            key="faculty_login_name",
-        )
+            custom_prefix = ""
+            if prefix_choice == "Other":
+                custom_prefix = st.text_input(
+                    "Enter Custom Prefix",
+                    placeholder="e.g. Assoc. Prof.",
+                    key="faculty_login_custom_prefix",
+                )
+            faculty_name_input = st.text_input(
+                "Full Name (without prefix)",
+                value="",
+                placeholder="Firstname Lastname",
+                help="Enter your full name without any prefix.",
+                key="faculty_login_name",
+            )
+
         if st.button("Login as Faculty", key="faculty_login_btn", use_container_width=True):
-            final_prefix = custom_prefix.strip() if prefix_choice == "Other" else prefix_choice
-            if not _is_valid_faculty_name(final_prefix, faculty_name_input):
-                st.sidebar.error("Please select a prefix and enter a valid name (at least 2 characters).")
+            if selected_faculty == "➕ New Faculty":
+                final_prefix = custom_prefix.strip() if prefix_choice == "Other" else prefix_choice
+                if not _is_valid_faculty_name(final_prefix, faculty_name_input):
+                    st.sidebar.error("Please select a prefix and enter a valid name (at least 2 characters).")
+                else:
+                    full_name = _normalize_faculty_name(f"{final_prefix} {faculty_name_input}")
+                    st.session_state["auth_is_authenticated"] = True
+                    st.session_state["auth_role"] = "faculty"
+                    st.session_state["auth_username"] = full_name
+                    st.query_params["role"] = "faculty"
+                    st.query_params["user"] = full_name
+                    _log_info(f"Faculty login success: {full_name}")
+                    st.rerun()
             else:
-                full_name = _normalize_faculty_name(f"{final_prefix} {faculty_name_input}")
                 st.session_state["auth_is_authenticated"] = True
                 st.session_state["auth_role"] = "faculty"
-                st.session_state["auth_username"] = full_name
+                st.session_state["auth_username"] = selected_faculty
                 st.query_params["role"] = "faculty"
-                st.query_params["user"] = full_name
-                _log_info(f"Faculty login success: {full_name}")
+                st.query_params["user"] = selected_faculty
+                _log_info(f"Faculty login success: {selected_faculty}")
                 st.rerun()
 
     with admin_tab:
@@ -299,7 +333,7 @@ def _safe_dataframe(df: pd.DataFrame, msg: str = "No data available.") -> None:
     if df.empty:
         st.info(msg)
     else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
 
 def _build_filters(df: pd.DataFrame) -> PublicationFilters:
@@ -314,7 +348,7 @@ def _build_filters(df: pd.DataFrame) -> PublicationFilters:
 
     st.session_state["flt_keyword"] = st.text_input("Keyword", value=st.session_state["flt_keyword"])
 
-    with st.popover("Advanced Filters", use_container_width=True):
+    with st.popover("Advanced Filters", width="stretch"):
         indexing_options = [""] + sorted(df.get("indexing_source", pd.Series(dtype=str)).dropna().unique().tolist())
         national_options = [""] + sorted(df.get("national_international", pd.Series(dtype=str)).dropna().unique().tolist())
         quartile_options = [""] + sorted(df.get("quartile", pd.Series(dtype=str)).dropna().unique().tolist())
@@ -412,7 +446,7 @@ def _dashboard_page() -> None:
                 )
                 .properties(height=300)
             )
-            st.altair_chart(donut, use_container_width=True)
+            st.altair_chart(donut, width="stretch")
         else:
             st.info("No category data available.")
 
@@ -430,7 +464,7 @@ def _dashboard_page() -> None:
                 )
                 .properties(height=300)
             )
-            st.altair_chart(year_bar, use_container_width=True)
+            st.altair_chart(year_bar, width="stretch")
         else:
             st.info("No year data available.")
 
@@ -609,7 +643,7 @@ def _publications_page() -> None:
         if not filtered_df.empty:
             st.dataframe(
                 filtered_df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "paper_url": column_config.LinkColumn("Paper URL", display_text="Open link"),
@@ -1157,12 +1191,6 @@ def _admin_submission_detail(submission_id: int, username: str) -> None:
         payload["authors"] = st.text_area("Authors", value=payload.get("authors", ""), key=f"a_{submission_id}")
         payload["pub_date"] = st.text_input("Publication Date", value=str(payload.get("pub_date", "")), key=f"d_{submission_id}")
         payload["doi"] = st.text_input("DOI", value=payload.get("doi", ""), key=f"doi_{submission_id}")
-        payload["paper_url"] = st.text_input("Paper URL", value=payload.get("paper_url", ""), key=f"url_{submission_id}")
-        payload["indexing_source"] = st.text_input(
-            "Indexing Source",
-            value=payload.get("indexing_source", category),
-            key=f"idx_{submission_id}",
-        )
 
         if sub_category in ("Journal", "Conference"):
             payload["national_international"] = _dropdown(
@@ -1171,113 +1199,111 @@ def _admin_submission_detail(submission_id: int, username: str) -> None:
             )
 
         if sub_category == "Journal":
-            payload["quartile"] = _dropdown(st, "Quartile", _QUARTILE_OPTIONS, payload.get("quartile", ""), f"q_{submission_id}")
-            payload["volume_issue"] = st.text_input(
-                "Volume/Issue",
-                value=payload.get("volume_issue", ""),
-                key=f"vj_{submission_id}",
-            )
-            payload["official_venue_url"] = st.text_input(
-                "Journal Official URL",
-                value=payload.get("official_venue_url", ""),
-                key=f"jou_{submission_id}",
-            )
-            payload["research_published_flag"] = _dropdown(
-                st, "Research Published", _YESNO_OPTIONS,
-                payload.get("research_published_flag", ""), f"jpub_{submission_id}",
-            )
-            payload["indexing_flag"] = _dropdown(
-                st, "Indexing Flag", _YESNO_OPTIONS,
-                payload.get("indexing_flag", ""), f"jif_{submission_id}",
-            )
-            payload["indexing_proof"] = st.text_input(
-                "Indexing Proof",
-                value=payload.get("indexing_proof", ""),
-                key=f"jip_{submission_id}",
-            )
-            payload["issn_isbn"] = st.text_input("ISSN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
-            payload["attachment_ref"] = st.text_input(
-                "Attachment Reference",
-                value=payload.get("attachment_ref", ""),
-                key=f"jar_{submission_id}",
-            )
+            c1, c2 = st.columns(2)
+            payload["quartile"] = _dropdown(c1, "Quartile", _QUARTILE_OPTIONS, payload.get("quartile", ""), f"q_{submission_id}")
+            payload["issn_isbn"] = c2.text_input("ISSN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
+            c1, c2 = st.columns(2)
+            payload["volume_issue"] = c1.text_input("Volume/Issue", value=payload.get("volume_issue", ""), key=f"vj_{submission_id}")
+            payload["official_venue_url"] = c2.text_input("Journal Official URL", value=payload.get("official_venue_url", ""), key=f"jou_{submission_id}")
             payload["venue"] = payload.get("venue") or payload.get("publication_name")
 
         elif sub_category == "Conference":
-            payload["venue"] = st.text_input("Venue", value=payload.get("venue", ""), key=f"v_{submission_id}")
-            payload["conference_date"] = st.text_input(
-                "Conference Date",
-                value=payload.get("conference_date", ""),
-                key=f"cd_{submission_id}",
-            )
-            payload["presented_accepted_flag"] = _dropdown(
-                st, "Presented/Accepted", _PRESENTED_OPTIONS,
-                payload.get("presented_accepted_flag", ""), f"cpaf_{submission_id}",
-            )
-            payload["volume_issue"] = st.text_input(
-                "Volume/Issue",
-                value=payload.get("volume_issue", ""),
-                key=f"cv_{submission_id}",
-            )
-            payload["official_venue_url"] = st.text_input(
-                "Conference Official URL",
-                value=payload.get("official_venue_url", ""),
-                key=f"cou_{submission_id}",
-            )
-            payload["research_published_flag"] = _dropdown(
-                st, "Research Published", _YESNO_OPTIONS,
-                payload.get("research_published_flag", ""), f"cpub_{submission_id}",
-            )
-            payload["indexing_flag"] = _dropdown(
-                st, "Indexing Flag", _YESNO_OPTIONS,
-                payload.get("indexing_flag", ""), f"cif_{submission_id}",
-            )
-            payload["indexing_proof"] = st.text_input(
-                "Indexing Proof",
-                value=payload.get("indexing_proof", ""),
-                key=f"cip_{submission_id}",
-            )
-            payload["issn_isbn"] = st.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
-            payload["certificate_ref"] = st.text_input(
-                "Certificate Reference",
-                value=payload.get("certificate_ref", ""),
-                key=f"ccr_{submission_id}",
-            )
-            payload["attachment_ref"] = st.text_input(
-                "Attachment Reference",
-                value=payload.get("attachment_ref", ""),
-                key=f"car_{submission_id}",
-            )
+            c1, c2 = st.columns(2)
+            payload["venue"] = c1.text_input("Venue", value=payload.get("venue", ""), key=f"v_{submission_id}")
+            payload["conference_date"] = c2.text_input("Conference Date", value=payload.get("conference_date", ""), key=f"cd_{submission_id}")
+            c1, c2 = st.columns(2)
+            payload["issn_isbn"] = c1.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
+            payload["volume_issue"] = c2.text_input("Volume/Issue", value=payload.get("volume_issue", ""), key=f"cv_{submission_id}")
+            payload["official_venue_url"] = st.text_input("Conference Official URL", value=payload.get("official_venue_url", ""), key=f"cou_{submission_id}")
 
         elif sub_category == "Book Chapter":
-            payload["publisher"] = st.text_input("Publisher", value=payload.get("publisher", ""), key=f"bp_{submission_id}")
-            payload["issn_isbn"] = st.text_input("ISBN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
-            payload["official_venue_url"] = st.text_input(
-                "Book URL",
-                value=payload.get("official_venue_url", ""),
-                key=f"bou_{submission_id}",
-            )
-            payload["book_indexed_ugc"] = st.text_input(
-                "Indexed in UGC",
-                value=payload.get("book_indexed_ugc", ""),
-                key=f"bugc_{submission_id}",
-            )
-            payload["book_indexed_scopus"] = st.text_input(
-                "Indexed in Scopus",
-                value=payload.get("book_indexed_scopus", ""),
-                key=f"bsc_{submission_id}",
-            )
-            payload["book_indexed_wos"] = st.text_input(
-                "Indexed in WoS",
-                value=payload.get("book_indexed_wos", ""),
-                key=f"bwos_{submission_id}",
-            )
-            payload["attachment_ref"] = st.text_input(
-                "Attachment Reference",
-                value=payload.get("attachment_ref", ""),
-                key=f"bar_{submission_id}",
-            )
+            c1, c2 = st.columns(2)
+            payload["publisher"] = c1.text_input("Publisher", value=payload.get("publisher", ""), key=f"bp_{submission_id}")
+            payload["issn_isbn"] = c2.text_input("ISBN", value=payload.get("issn_isbn", ""), key=f"is_{submission_id}")
+            payload["official_venue_url"] = st.text_input("Book URL", value=payload.get("official_venue_url", ""), key=f"bou_{submission_id}")
             payload["venue"] = payload.get("venue") or payload.get("publisher")
+
+        # ── Pipeline Status (Admin View) ──────────────────────────────
+        st.divider()
+        st.subheader("📋 Publication Status Pipeline")
+
+        is_accepted = payload.get("presented_accepted_flag", "") in ("Yes", "Presented", "Accepted")
+        is_published = payload.get("research_published_flag", "") == "Yes"
+        is_indexed = payload.get("indexing_flag", "") == "Yes"
+
+        # Pipeline summary
+        cols = st.columns(3)
+        cols[0].metric("Accepted", "✅ Yes" if is_accepted else "❌ No")
+        cols[1].metric("Published", "✅ Yes" if is_published else "⏳ Pending" if is_accepted else "—")
+        cols[2].metric("Indexed", "✅ Yes" if is_indexed else "⏳ Pending" if is_published else "—")
+
+        # Step 1: Accepted
+        step1_label = "Presented/Accepted" if sub_category == "Conference" else "Accepted"
+        step1_options = _PRESENTED_OPTIONS if sub_category == "Conference" else _ACCEPTED_OPTIONS
+        payload["presented_accepted_flag"] = _dropdown(
+            st, f"Step 1: {step1_label}", step1_options,
+            payload.get("presented_accepted_flag", ""), f"ap_{submission_id}",
+        )
+        cert_ref = payload.get("certificate_ref", "")
+        if cert_ref:
+            if Path(cert_ref).exists():
+                st.download_button(
+                    "📥 Download Acceptance Proof",
+                    data=Path(cert_ref).read_bytes(),
+                    file_name=Path(cert_ref).name,
+                    key=f"dl_cert_{submission_id}",
+                )
+            else:
+                st.caption(f"📄 Proof ref: {cert_ref}")
+
+        # Step 2: Published
+        payload["research_published_flag"] = _dropdown(
+            st, "Step 2: Published", _YESNO_OPTIONS,
+            payload.get("research_published_flag", ""), f"rp_{submission_id}",
+        )
+        payload["paper_url"] = st.text_input("Publication Link", value=payload.get("paper_url", ""), key=f"url_{submission_id}")
+        attach_ref = payload.get("attachment_ref", "")
+        if attach_ref:
+            if Path(attach_ref).exists():
+                st.download_button(
+                    "📥 Download Publication Proof",
+                    data=Path(attach_ref).read_bytes(),
+                    file_name=Path(attach_ref).name,
+                    key=f"dl_att_{submission_id}",
+                )
+            else:
+                st.caption(f"📄 Attachment ref: {attach_ref}")
+
+        # Step 3: Indexed
+        payload["indexing_flag"] = _dropdown(
+            st, "Step 3: Indexed", _YESNO_OPTIONS,
+            payload.get("indexing_flag", ""), f"if_{submission_id}",
+        )
+        payload["indexing_source"] = _dropdown(
+            st, "Indexing Type", _INDEXING_OPTIONS,
+            payload.get("indexing_source", ""), f"idx_{submission_id}",
+        )
+        # Auto-derive category
+        if payload.get("indexing_source") and payload["indexing_source"] not in ("", "Other"):
+            payload["category"] = payload["indexing_source"]
+
+        idx_proof = payload.get("indexing_proof", "")
+        if idx_proof:
+            if Path(idx_proof).exists():
+                st.download_button(
+                    "📥 Download Indexing Proof",
+                    data=Path(idx_proof).read_bytes(),
+                    file_name=Path(idx_proof).name,
+                    key=f"dl_idx_{submission_id}",
+                )
+            else:
+                st.caption(f"📄 Indexing proof ref: {idx_proof}")
+
+        if sub_category == "Book Chapter":
+            c1, c2, c3 = st.columns(3)
+            payload["book_indexed_ugc"] = _dropdown(c1, "Indexed in UGC", _YESNO_OPTIONS, payload.get("book_indexed_ugc", ""), f"bugc_{submission_id}")
+            payload["book_indexed_scopus"] = _dropdown(c2, "Indexed in Scopus", _YESNO_OPTIONS, payload.get("book_indexed_scopus", ""), f"bsc_{submission_id}")
+            payload["book_indexed_wos"] = _dropdown(c3, "Indexed in WoS", _YESNO_OPTIONS, payload.get("book_indexed_wos", ""), f"bwos_{submission_id}")
 
         c1, c2 = st.columns(2)
         if c1.button("Approve"):
