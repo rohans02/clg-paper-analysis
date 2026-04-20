@@ -52,14 +52,29 @@ TEMPLATE_PATH_ENV = "APP_TEMPLATE_PATH"
 LOG_PATH_ENV = "APP_LOG_PATH"
 ADMIN_MAX_FAILED_ATTEMPTS = 5
 ADMIN_LOCKOUT_SECONDS = 300
-FACULTY_NAME_PATTERN = re.compile(
-    r"^(?:Dr\. ?(?:Ms\.|Mrs\.|Mr\.)? ?|Ms\. ?|Mr\. ?|Mrs\. ?)[A-Za-z][A-Za-z .'-]{1,}$"
-)
+FACULTY_PREFIX_OPTIONS = ["Dr.", "Dr. Ms.", "Dr. Mrs.", "Dr. Mr.", "Ms.", "Mr.", "Mrs.", "Prof.", "Other"]
 
 _NAT_INT_OPTIONS = ["", "National", "International"]
 _YESNO_OPTIONS = ["", "Yes", "No"]
 _QUARTILE_OPTIONS = ["", "Q1", "Q2", "Q3", "Q4"]
 _PRESENTED_OPTIONS = ["", "Presented", "Accepted"]
+_ACCEPTED_OPTIONS = ["", "Yes", "No"]
+_INDEXING_OPTIONS = ["", "Scopus", "WoS", "UGC Care", "Peer Reviewed", "International Conference", "National Conference", "Book Chapter", "Other"]
+_PROOF_FILE_TYPES = ["pdf", "png", "jpg", "jpeg", "webp"]
+UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
+
+
+def _save_uploaded_file(uploaded_file) -> str | None:
+    """Save an uploaded file to the uploads directory and return the file path."""
+    if uploaded_file is None:
+        return None
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    import uuid
+    ext = Path(uploaded_file.name).suffix.lower()
+    filename = f"{uuid.uuid4().hex}{ext}"
+    file_path = UPLOADS_DIR / filename
+    file_path.write_bytes(uploaded_file.getvalue())
+    return str(file_path)
 
 
 def _dropdown(container, label: str, options: list[str], current: str, key: str) -> str:
@@ -164,8 +179,12 @@ def _normalize_faculty_name(name: str) -> str:
     return " ".join(name.strip().split())
 
 
-def _is_valid_faculty_name(name: str) -> bool:
-    return bool(FACULTY_NAME_PATTERN.match(name))
+def _is_valid_faculty_name(prefix: str, name: str) -> bool:
+    if not prefix or not prefix.strip():
+        return False
+    if not name or len(name.strip()) < 2:
+        return False
+    return bool(re.match(r"^[A-Za-z][A-Za-z .'-]{1,}$", name.strip()))
 
 
 def _resolve_admin_password() -> str | None:
@@ -202,24 +221,37 @@ def _auth_sidebar() -> tuple[str, str] | None:
     faculty_tab, admin_tab = st.sidebar.tabs(["Faculty", "Admin"])
 
     with faculty_tab:
+        prefix_choice = st.selectbox(
+            "Prefix",
+            FACULTY_PREFIX_OPTIONS,
+            key="faculty_login_prefix",
+        )
+        custom_prefix = ""
+        if prefix_choice == "Other":
+            custom_prefix = st.text_input(
+                "Enter Custom Prefix",
+                placeholder="e.g. Assoc. Prof.",
+                key="faculty_login_custom_prefix",
+            )
         faculty_name_input = st.text_input(
-            "Faculty Name",
+            "Full Name (without prefix)",
             value="",
-            placeholder="Dr. Ms. Firstname Lastname",
-            help="Enter official faculty name with prefix (Dr./Ms./Mr./Mrs.).",
+            placeholder="Firstname Lastname",
+            help="Enter your full name without any prefix.",
             key="faculty_login_name",
         )
         if st.button("Login as Faculty", key="faculty_login_btn", use_container_width=True):
-            normalized_name = _normalize_faculty_name(faculty_name_input)
-            if not _is_valid_faculty_name(normalized_name):
-                st.sidebar.error("Invalid faculty name format. Include prefix like Dr./Ms./Mr./Mrs.")
+            final_prefix = custom_prefix.strip() if prefix_choice == "Other" else prefix_choice
+            if not _is_valid_faculty_name(final_prefix, faculty_name_input):
+                st.sidebar.error("Please select a prefix and enter a valid name (at least 2 characters).")
             else:
+                full_name = _normalize_faculty_name(f"{final_prefix} {faculty_name_input}")
                 st.session_state["auth_is_authenticated"] = True
                 st.session_state["auth_role"] = "faculty"
-                st.session_state["auth_username"] = normalized_name
+                st.session_state["auth_username"] = full_name
                 st.query_params["role"] = "faculty"
-                st.query_params["user"] = normalized_name
-                _log_info(f"Faculty login success: {normalized_name}")
+                st.query_params["user"] = full_name
+                _log_info(f"Faculty login success: {full_name}")
                 st.rerun()
 
     with admin_tab:
@@ -637,13 +669,17 @@ def _faculty_new_submission() -> None:
 
     workbook_categories: dict[str, list[str]] = {}
     for config in SHEET_CONFIGS.values():
-        workbook_categories.setdefault(config.category, [])
-        if config.publication_type not in workbook_categories[config.category]:
-            workbook_categories[config.category].append(config.publication_type)
+        cat = "Book Chapter" if config.category == "Book" else config.category
+        workbook_categories.setdefault(cat, [])
+        if config.publication_type not in workbook_categories[cat]:
+            workbook_categories[cat].append(config.publication_type)
+    # Add "Other" category
+    if "Other" not in workbook_categories:
+        workbook_categories["Other"] = ["Journal", "Conference", "Book Chapter"]
 
-    category = st.selectbox("Category (Workbook)", list(workbook_categories.keys()), key="faculty_workbook_category")
+    category = st.selectbox("Category", list(workbook_categories.keys()), key="faculty_workbook_category")
     sub_category = st.selectbox(
-        "Sub Category (Workbook)",
+        "Sub Category",
         workbook_categories.get(category, ["Journal"]),
         key="faculty_workbook_subcategory",
     )
@@ -702,7 +738,7 @@ def _faculty_new_submission() -> None:
             value=payload.get("faculty_name", faculty_name),
             key="faculty_new_name_review",
         )
-        payload["title"] = c2.text_input("Title", value=payload.get("title", ""), key="faculty_review_title")
+        payload["title"] = c2.text_input("Paper Title", value=payload.get("title", ""), key="faculty_review_title")
 
         c1, c2 = st.columns(2)
         payload["publication_name"] = c1.text_input(
@@ -728,18 +764,6 @@ def _faculty_new_submission() -> None:
         payload["pub_date"] = selected_pub_date.isoformat() if selected_pub_date else None
         payload["doi"] = c2.text_input("DOI", value=payload.get("doi", ""), key="faculty_review_doi")
 
-        c1, c2 = st.columns(2)
-        payload["paper_url"] = c1.text_input(
-            "Paper URL",
-            value=payload.get("paper_url", source_input),
-            key="faculty_review_paper_url",
-        )
-        payload["indexing_source"] = c2.text_input(
-            "Indexing Source",
-            value=payload.get("indexing_source", category),
-            key="faculty_review_indexing_source",
-        )
-
         if sub_category in ("Journal", "Conference"):
             payload["national_international"] = _dropdown(
                 st, "National/International", _NAT_INT_OPTIONS,
@@ -762,28 +786,6 @@ def _faculty_new_submission() -> None:
                 value=payload.get("official_venue_url", ""),
                 key="faculty_review_official_url_journal",
             )
-
-            c1, c2 = st.columns(2)
-            payload["research_published_flag"] = _dropdown(
-                c1, "Research Published", _YESNO_OPTIONS,
-                payload.get("research_published_flag", ""), "faculty_review_published_journal",
-            )
-            payload["indexing_flag"] = _dropdown(
-                c2, "Indexing Flag", _YESNO_OPTIONS,
-                payload.get("indexing_flag", ""), "faculty_review_indexing_flag_journal",
-            )
-
-            c1, c2 = st.columns(2)
-            payload["indexing_proof"] = c1.text_input(
-                "Indexing Proof",
-                value=payload.get("indexing_proof", ""),
-                key="faculty_review_indexing_proof_journal",
-            )
-            payload["attachment_ref"] = c2.text_input(
-                "Attachment Reference",
-                value=payload.get("attachment_ref", ""),
-                key="faculty_review_attachment_journal",
-            )
             payload["venue"] = payload.get("venue") or payload.get("publication_name")
 
         elif sub_category == "Conference":
@@ -796,87 +798,129 @@ def _faculty_new_submission() -> None:
             )
 
             c1, c2 = st.columns(2)
-            payload["presented_accepted_flag"] = _dropdown(
-                c1, "Presented/Accepted", _PRESENTED_OPTIONS,
-                payload.get("presented_accepted_flag", ""), "faculty_review_presented_accepted",
-            )
-            payload["issn_isbn"] = c2.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key="faculty_review_issn_isbn_conf")
-
-            c1, c2 = st.columns(2)
-            payload["volume_issue"] = c1.text_input(
+            payload["issn_isbn"] = c1.text_input("ISSN/ISBN", value=payload.get("issn_isbn", ""), key="faculty_review_issn_isbn_conf")
+            payload["volume_issue"] = c2.text_input(
                 "Volume/Issue",
                 value=payload.get("volume_issue", ""),
                 key="faculty_review_volume_issue_conference",
             )
-            payload["official_venue_url"] = c2.text_input(
+            payload["official_venue_url"] = st.text_input(
                 "Conference Official URL",
                 value=payload.get("official_venue_url", ""),
                 key="faculty_review_official_url_conference",
-            )
-
-            c1, c2 = st.columns(2)
-            payload["research_published_flag"] = _dropdown(
-                c1, "Research Published", _YESNO_OPTIONS,
-                payload.get("research_published_flag", ""), "faculty_review_published_conference",
-            )
-            payload["indexing_flag"] = _dropdown(
-                c2, "Indexing Flag", _YESNO_OPTIONS,
-                payload.get("indexing_flag", ""), "faculty_review_indexing_flag_conference",
-            )
-
-            c1, c2 = st.columns(2)
-            payload["indexing_proof"] = c1.text_input(
-                "Indexing Proof",
-                value=payload.get("indexing_proof", ""),
-                key="faculty_review_indexing_proof_conference",
-            )
-            payload["certificate_ref"] = c2.text_input(
-                "Certificate Reference",
-                value=payload.get("certificate_ref", ""),
-                key="faculty_review_certificate_ref",
-            )
-
-            payload["attachment_ref"] = st.text_input(
-                "Attachment Reference",
-                value=payload.get("attachment_ref", ""),
-                key="faculty_review_attachment_conference",
             )
 
         elif sub_category == "Book Chapter":
             c1, c2 = st.columns(2)
             payload["publisher"] = c1.text_input("Publisher", value=payload.get("publisher", ""), key="faculty_review_publisher")
             payload["issn_isbn"] = c2.text_input("ISBN", value=payload.get("issn_isbn", ""), key="faculty_review_isbn")
-
-            c1, c2 = st.columns(2)
-            payload["official_venue_url"] = c1.text_input(
+            payload["official_venue_url"] = st.text_input(
                 "Book URL",
                 value=payload.get("official_venue_url", ""),
                 key="faculty_review_book_url",
             )
-            payload["attachment_ref"] = c2.text_input(
-                "Attachment Reference",
-                value=payload.get("attachment_ref", ""),
-                key="faculty_review_attachment_book",
-            )
-
-            c1, c2 = st.columns(2)
-            payload["book_indexed_ugc"] = c1.text_input(
-                "Indexed in UGC",
-                value=payload.get("book_indexed_ugc", ""),
-                key="faculty_review_book_ugc",
-            )
-            payload["book_indexed_scopus"] = c2.text_input(
-                "Indexed in Scopus",
-                value=payload.get("book_indexed_scopus", ""),
-                key="faculty_review_book_scopus",
-            )
-
-            payload["book_indexed_wos"] = st.text_input(
-                "Indexed in WoS",
-                value=payload.get("book_indexed_wos", ""),
-                key="faculty_review_book_wos",
-            )
             payload["venue"] = payload.get("venue") or payload.get("publisher")
+
+        # ── Publication Status Pipeline ──────────────────────────────
+        st.divider()
+        st.subheader("📋 Publication Status Pipeline")
+
+        # Step 1: Accepted / Presented
+        step1_label = "Is your paper presented/accepted?" if sub_category == "Conference" else "Is your paper accepted?"
+        step1_options = _PRESENTED_OPTIONS if sub_category == "Conference" else _ACCEPTED_OPTIONS
+        step1_key = "faculty_pipeline_accepted"
+        payload["presented_accepted_flag"] = _dropdown(
+            st, f"**Step 1:** {step1_label}", step1_options,
+            payload.get("presented_accepted_flag", ""), step1_key,
+        )
+        is_accepted = payload["presented_accepted_flag"] in ("Yes", "Presented", "Accepted")
+
+        if is_accepted:
+            acceptance_proof = st.file_uploader(
+                "📎 Upload acceptance/presentation proof",
+                type=_PROOF_FILE_TYPES,
+                key="faculty_pipeline_acceptance_proof",
+                help="Upload acceptance letter, certificate, or screenshot (PDF/PNG/JPG)",
+            )
+            if acceptance_proof:
+                payload["_acceptance_proof_pending"] = True
+                st.session_state["_acceptance_proof_file"] = acceptance_proof
+            if payload.get("certificate_ref"):
+                st.caption(f"📄 Existing proof reference: {payload['certificate_ref']}")
+
+        # Step 2: Published (only if accepted)
+        if is_accepted:
+            payload["research_published_flag"] = _dropdown(
+                st, "**Step 2:** Is your paper published?", _YESNO_OPTIONS,
+                payload.get("research_published_flag", ""), "faculty_pipeline_published",
+            )
+            is_published = payload["research_published_flag"] == "Yes"
+
+            if is_published:
+                payload["paper_url"] = st.text_input(
+                    "🔗 Publication Link",
+                    value=payload.get("paper_url", ""),
+                    key="faculty_pipeline_pub_link",
+                    help="Direct link to the published paper",
+                )
+                publication_proof = st.file_uploader(
+                    "📎 Upload publication proof (optional)",
+                    type=_PROOF_FILE_TYPES,
+                    key="faculty_pipeline_pub_proof",
+                    help="Upload first page, DOI screenshot, or publisher confirmation",
+                )
+                if publication_proof:
+                    payload["_publication_proof_pending"] = True
+                    st.session_state["_publication_proof_file"] = publication_proof
+                if payload.get("attachment_ref"):
+                    st.caption(f"📄 Existing attachment: {payload['attachment_ref']}")
+        else:
+            is_published = False
+
+        # Step 3: Indexed (only if published)
+        if is_accepted and is_published:
+            payload["indexing_flag"] = _dropdown(
+                st, "**Step 3:** Is your paper indexed?", _YESNO_OPTIONS,
+                payload.get("indexing_flag", ""), "faculty_pipeline_indexed",
+            )
+            is_indexed = payload["indexing_flag"] == "Yes"
+
+            if is_indexed:
+                payload["indexing_source"] = _dropdown(
+                    st, "Select Indexing", _INDEXING_OPTIONS,
+                    payload.get("indexing_source", ""), "faculty_pipeline_indexing_type",
+                )
+                # Auto-derive category from indexing selection
+                if payload["indexing_source"] and payload["indexing_source"] != "Other":
+                    payload["category"] = payload["indexing_source"]
+
+                indexing_proof = st.file_uploader(
+                    "📎 Upload indexing proof",
+                    type=_PROOF_FILE_TYPES,
+                    key="faculty_pipeline_indexing_proof",
+                    help="Upload Scopus/WoS listing screenshot or indexing certificate",
+                )
+                if indexing_proof:
+                    payload["_indexing_proof_pending"] = True
+                    st.session_state["_indexing_proof_file"] = indexing_proof
+                if payload.get("indexing_proof"):
+                    st.caption(f"📄 Existing indexing proof: {payload['indexing_proof']}")
+
+                # Book-specific indexing details
+                if sub_category == "Book Chapter" and is_indexed:
+                    c1, c2, c3 = st.columns(3)
+                    payload["book_indexed_ugc"] = _dropdown(c1, "Indexed in UGC", _YESNO_OPTIONS, payload.get("book_indexed_ugc", ""), "faculty_review_book_ugc")
+                    payload["book_indexed_scopus"] = _dropdown(c2, "Indexed in Scopus", _YESNO_OPTIONS, payload.get("book_indexed_scopus", ""), "faculty_review_book_scopus")
+                    payload["book_indexed_wos"] = _dropdown(c3, "Indexed in WoS", _YESNO_OPTIONS, payload.get("book_indexed_wos", ""), "faculty_review_book_wos")
+        else:
+            is_indexed = False
+
+        # Show pipeline summary
+        st.divider()
+        cols = st.columns(3)
+        cols[0].metric("Accepted", "✅ Yes" if is_accepted else "❌ No")
+        cols[1].metric("Published", "✅ Yes" if is_published else "⏳ Pending" if is_accepted else "—")
+        cols[2].metric("Indexed", "✅ Yes" if is_indexed else "⏳ Pending" if is_published else "—")
 
         confidence = float(st.session_state.get("ingestion_confidence", 0.0))
         warnings = st.session_state.get("ingestion_warnings", [])
@@ -884,6 +928,41 @@ def _faculty_new_submission() -> None:
             st.warning(warning)
 
         if st.button("Submit for Admin Review", type="primary"):
+            # Required field validation
+            missing_fields = []
+            if not payload.get("title", "").strip():
+                missing_fields.append("Paper Title")
+            if not payload.get("publication_name", "").strip() and not payload.get("venue", "").strip():
+                missing_fields.append("Journal/Conference/Book Name")
+            if not payload.get("authors", "").strip():
+                missing_fields.append("Authors")
+            if not payload.get("faculty_name", "").strip():
+                missing_fields.append("Faculty Name")
+            if missing_fields:
+                st.error(f"Please fill in the required fields: **{', '.join(missing_fields)}**")
+                return
+
+            # Save uploaded proof files
+            if st.session_state.get("_acceptance_proof_file"):
+                path = _save_uploaded_file(st.session_state["_acceptance_proof_file"])
+                if path:
+                    payload["certificate_ref"] = path
+                st.session_state.pop("_acceptance_proof_file", None)
+            if st.session_state.get("_publication_proof_file"):
+                path = _save_uploaded_file(st.session_state["_publication_proof_file"])
+                if path:
+                    payload["attachment_ref"] = path
+                st.session_state.pop("_publication_proof_file", None)
+            if st.session_state.get("_indexing_proof_file"):
+                path = _save_uploaded_file(st.session_state["_indexing_proof_file"])
+                if path:
+                    payload["indexing_proof"] = path
+                st.session_state.pop("_indexing_proof_file", None)
+
+            # Clean up internal flags
+            payload.pop("_acceptance_proof_pending", None)
+            payload.pop("_publication_proof_pending", None)
+            payload.pop("_indexing_proof_pending", None)
             try:
                 selected_method = st.session_state.get("ingestion_input_method")
                 if not selected_method:
@@ -1033,17 +1112,23 @@ def _admin_submission_detail(submission_id: int, username: str) -> None:
 
         workbook_categories: dict[str, list[str]] = {}
         for config in SHEET_CONFIGS.values():
-            workbook_categories.setdefault(config.category, [])
-            if config.publication_type not in workbook_categories[config.category]:
-                workbook_categories[config.category].append(config.publication_type)
+            cat = "Book Chapter" if config.category == "Book" else config.category
+            workbook_categories.setdefault(cat, [])
+            if config.publication_type not in workbook_categories[cat]:
+                workbook_categories[cat].append(config.publication_type)
+        if "Other" not in workbook_categories:
+            workbook_categories["Other"] = ["Journal", "Conference", "Book Chapter"]
 
         category_options = list(workbook_categories.keys())
         current_category = payload.get("category")
+        # Map legacy "Book" to "Book Chapter"
+        if current_category == "Book":
+            current_category = "Book Chapter"
         if current_category not in category_options:
             current_category = category_options[0]
 
         category = st.selectbox(
-            "Category (Workbook)",
+            "Category",
             category_options,
             index=category_options.index(current_category),
             key=f"admin_category_{submission_id}",
@@ -1053,7 +1138,7 @@ def _admin_submission_detail(submission_id: int, username: str) -> None:
         if current_sub_category not in sub_options:
             current_sub_category = sub_options[0]
         sub_category = st.selectbox(
-            "Sub Category (Workbook)",
+            "Sub Category",
             sub_options,
             index=sub_options.index(current_sub_category),
             key=f"admin_sub_category_{submission_id}",
@@ -1063,7 +1148,7 @@ def _admin_submission_detail(submission_id: int, username: str) -> None:
         payload["publication_type"] = sub_category
 
         payload["faculty_name"] = st.text_input("Faculty Name", value=payload.get("faculty_name", ""), key=f"f_{submission_id}")
-        payload["title"] = st.text_input("Title", value=payload.get("title", ""), key=f"t_{submission_id}")
+        payload["title"] = st.text_input("Paper Title", value=payload.get("title", ""), key=f"t_{submission_id}")
         payload["publication_name"] = st.text_input(
             "Journal/Conference/Book Name",
             value=payload.get("publication_name", payload.get("venue", "")),

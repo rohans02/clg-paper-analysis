@@ -1,7 +1,8 @@
 .venv/
 __pycache__/
 .pytest_cache/
-.streamlit/secrets.toml
+# .streamlit/secrets.toml
 app.log
 backups/
+uploads/
 *.db
