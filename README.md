@@ -4,12 +4,11 @@ Local Streamlit app to manage faculty publication submissions with admin review 
 
 ## Key Workflow
 
-- Faculty creates submission from URL/DOI/manual form.
-- Submission is stored in `pending_submissions`.
-- Admin reviews and approves/rejects.
-- Only approved records are inserted into `publications`.
-- Admin can run `Migration` to backup DB, wipe `publications`, and reimport corrected data from Excel.
-- Admin can run `System Checks` and download a diagnostics XLSX report.
+- Faculty sign in by name (optionally with a shared department passcode) and submit a publication from a link/DOI or by hand, attaching proofs.
+- Submissions wait in `pending_submissions` until the admin approves or rejects them in the Review Queue.
+- Only approved records are inserted into `publications` and appear in the Publications list.
+- Admin can import the official Excel workbook (backup, wipe, reimport) from **Import from Excel**, and download the current data back in the official layout from **Publications**.
+- Technical diagnostics live under **Import from Excel → Advanced diagnostics**.
 
 ## Setup
 
@@ -32,6 +31,10 @@ streamlit run app.py
 
 ```toml
 ADMIN_PASSWORD = "your-admin-password"
+# Optional: shared passcode faculty must enter to log in (unset = open faculty login)
+FACULTY_PASSCODE = "department-passcode"
+# Optional: key that signs login state kept in the URL (defaults to ADMIN_PASSWORD)
+AUTH_SECRET = "long-random-string"
 # Optional overrides
 DB_PATH = "/tmp/publication_manager.db"
 TEMPLATE_PATH = "Faculty Publications,A.Y. 2025-26,SEM-I & II.xlsx"
@@ -40,9 +43,12 @@ LOG_PATH = "/tmp/app.log"
 
 - Equivalent environment variable overrides are also supported:
 	- `APP_ADMIN_PASSWORD`
+	- `APP_FACULTY_PASSCODE`
+	- `APP_AUTH_SECRET`
 	- `APP_DB_PATH`
 	- `APP_TEMPLATE_PATH`
 	- `APP_LOG_PATH`
+- `.streamlit/secrets.toml` is gitignored. Never commit it; copy `.streamlit/secrets.toml.example` locally instead.
 
 ## Test
 
@@ -50,15 +56,20 @@ LOG_PATH = "/tmp/app.log"
 pytest -q
 ```
 
-## Migration
+## Import from Excel
 
-- Open app as `admin`.
-- Navigate to `Migration`.
-- Provide workbook path.
-- Run rebuild (`backup + wipe + reimport`) and inspect reconciliation + quality checks.
+- Sign in as admin and open **Import from Excel**.
+- Upload the official workbook and confirm. The app backs up the database, wipes `publications`, reimports, and shows what was skipped and why.
 
-## Export
+## Download as Excel
 
-- `Export Full DB (Official Format)`: exports all approved records in the same official workbook layout used for migration.
-- `Export Filtered (Official Format)`: exports only current filtered records in the same official workbook layout.
-- Both official exports preserve source-style sheets and update the `Analysis` sheet from the exported dataset.
+- On **Publications**, "Prepare all records" or "Prepare current filter" builds a workbook in the official layout, then a download button appears.
+- Records whose "Indexed in" / type combination has no sheet in the official workbook are listed as unexported instead of being dropped silently.
+- The `Analysis` sheet is recomputed from the exported rows.
+
+## Security notes
+
+- Login state is kept in the URL as a signed, expiring token (admin 2 h, faculty 12 h). Signing out revokes it. Do not share the address bar while signed in.
+- Admin sign-in is throttled per client IP: 5 failures lock it for 5 minutes, across browser sessions.
+- Paper links are fetched server-side only if they are http(s) and resolve to public addresses, with a 5 MB cap.
+- `.streamlit/config.toml` hides error details and the developer toolbar from visitors.
