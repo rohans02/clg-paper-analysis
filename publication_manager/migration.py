@@ -23,12 +23,13 @@ from publication_manager.models import (
     PublicationSourceRow,
 )
 from publication_manager.normalization import normalize_doi, parse_date
+from publication_manager.taxonomy import ALLOWED_CATEGORIES
 
 
 DATE_RANGE_PATTERN = re.compile(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\s+and\s+\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", re.IGNORECASE)
 EXPECTED_NAT_VALUES = {"National", "International"}
 EXPECTED_TYPES = {"Journal", "Conference", "Book Chapter"}
-EXPECTED_CATEGORIES = {"Scopus", "WoS", "UGC Care", "Peer Reviewed", "Book", "International Conference", "National Conference"}
+EXPECTED_CATEGORIES = set(ALLOWED_CATEGORIES)
 
 MIGRATION_STATUS_PATH = "migration_status.json"
 

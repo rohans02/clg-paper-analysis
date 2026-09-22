@@ -99,6 +99,11 @@ def _insert_publication_details(session: Session, publication_id: int, payload: 
         )
 
 
+def insert_publication_details(session: Session, publication_id: int, payload: dict[str, Any]) -> None:
+    """Public wrapper: write the type-specific details row for a publication."""
+    _insert_publication_details(session, publication_id, payload)
+
+
 def ensure_template_registry(
     session: Session,
     sheet_name: str,

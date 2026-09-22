@@ -6,7 +6,7 @@ from hashlib import sha256
 import json
 from typing import Any
 
-from sqlalchemy import extract, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from publication_manager.enums import InputMethod, ReviewActionType, SubmissionS
 from publication_manager.lossless import create_publication_core_from_payload, record_payload_snapshot
 from publication_manager.models import PendingSubmission, Publication, PublicationCore, ReviewAction
 from publication_manager.normalization import normalize_doi, parse_date
+from publication_manager.taxonomy import normalize_category
 
 
 ALLOWED_TRANSITIONS = {
@@ -48,6 +49,8 @@ def _normalize_payload_value(value: Any) -> Any:
 
 def _normalize_insert_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = {key: _normalize_payload_value(value) for key, value in payload.items()}
+    if normalized.get("category"):
+        normalized["category"] = normalize_category(normalized["category"])
     normalized_doi = normalize_doi(normalized.get("doi"))
     if normalized_doi:
         normalized["doi"] = normalized_doi
@@ -188,29 +191,34 @@ def _find_hard_duplicate(session: Session, doi_normalized: str | None) -> bool:
     return session.execute(core_stmt).scalar_one_or_none() is not None
 
 
+def _fold(value: str) -> str:
+    return " ".join(str(value).strip().lower().split())
+
+
 def _find_soft_duplicate(session: Session, payload: dict[str, Any]) -> bool:
+    """Same title and faculty (case/whitespace-insensitive).
+
+    If both records carry a publication date the years must also match; a record
+    with no date on either side is still flagged so the admin can decide.
+    """
     title = payload.get("title")
     faculty = payload.get("faculty_name")
-    parsed_date = parse_date(payload.get("pub_date"))
-    if not title or not faculty or not parsed_date:
+    if not title or not faculty:
         return False
-    stmt = (
-        select(Publication.id)
-        .where(Publication.title == title)
-        .where(Publication.faculty_name == faculty)
-        .where(extract("year", Publication.pub_date) == parsed_date.year)
-        .limit(1)
-    )
-    if session.execute(stmt).scalar_one_or_none() is not None:
-        return True
-    core_stmt = (
-        select(PublicationCore.id)
-        .where(PublicationCore.title == title)
-        .where(PublicationCore.faculty_name == faculty)
-        .where(extract("year", PublicationCore.pub_date) == parsed_date.year)
-        .limit(1)
-    )
-    return session.execute(core_stmt).scalar_one_or_none() is not None
+    parsed_date = parse_date(payload.get("pub_date"))
+    title_key = _fold(title)
+    faculty_key = _fold(faculty)
+
+    for model in (Publication, PublicationCore):
+        stmt = (
+            select(model.pub_date)
+            .where(func.lower(func.trim(model.title)) == title_key)
+            .where(func.lower(func.trim(model.faculty_name)) == faculty_key)
+        )
+        for (existing_date,) in session.execute(stmt).all():
+            if parsed_date is None or existing_date is None or existing_date.year == parsed_date.year:
+                return True
+    return False
 
 
 def approve_submission(

@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
 from publication_manager.query import PublicationFilters, get_publications_df
+from publication_manager.taxonomy import OFFICIAL_SHEET_MAP, normalize_category
 
 
 def _build_metadata_df(mode: str, actor: str, row_count: int, filters: dict[str, Any] | None) -> pd.DataFrame:
@@ -73,19 +74,6 @@ def export_filtered_xlsx(
     }
     metadata_df = _build_metadata_df("filtered", actor, len(df), filter_dict)
     return _build_xlsx_bytes(df, metadata_df), meta
-
-
-OFFICIAL_SHEET_MAP: dict[tuple[str, str], str] = {
-    ("Scopus", "Journal"): "Scopus Journal",
-    ("Scopus", "Conference"): "Scopus Conference",
-    ("International Conference", "Conference"): "International Conference",
-    ("National Conference", "Conference"): "National Conference",
-    ("WoS", "Journal"): "WoS Journal",
-    ("WoS", "Conference"): "WoS Conference",
-    ("Peer Reviewed", "Journal"): "Peer Reviewed Journal",
-    ("UGC Care", "Journal"): "UGC Care Journal",
-    ("Book", "Book Chapter"): "Book ChapterBook",
-}
 
 
 def _find_data_start_row(ws) -> int:
@@ -247,6 +235,26 @@ def _populate_analysis_sheet(wb, publications_df: pd.DataFrame) -> None:
         ws.cell(r, 11).value = f"=SUM(C{r}:J{r})"
 
 
+def _unexported_records(publications_df: pd.DataFrame, available_sheets: set[str]) -> list[dict[str, Any]]:
+    """Rows whose (category, publication_type) has no sheet in the official workbook."""
+    if publications_df.empty:
+        return []
+    rows: list[dict[str, Any]] = []
+    for _, row in publications_df.iterrows():
+        sheet = OFFICIAL_SHEET_MAP.get((row.get("category"), row.get("publication_type")))
+        if sheet is None or sheet not in available_sheets:
+            rows.append(
+                {
+                    "id": row.get("id"),
+                    "faculty_name": row.get("faculty_name"),
+                    "title": row.get("title"),
+                    "category": row.get("category"),
+                    "publication_type": row.get("publication_type"),
+                }
+            )
+    return rows
+
+
 def export_official_format_xlsx(
     session: Session,
     actor: str,
@@ -258,6 +266,8 @@ def export_official_format_xlsx(
         raise FileNotFoundError(f"Template file not found: {template_file}")
 
     publications_df = get_publications_df(session, filters or PublicationFilters())
+    if not publications_df.empty:
+        publications_df = publications_df.assign(category=publications_df["category"].map(normalize_category))
     wb = load_workbook(template_file)
     start_rows: dict[str, int] = {}
 
@@ -290,12 +300,16 @@ def export_official_format_xlsx(
 
     _populate_analysis_sheet(wb, publications_df)
 
+    unexported = _unexported_records(publications_df, set(wb.sheetnames))
+
     output = BytesIO()
     wb.save(output)
     metadata = {
         "mode": "official_format_filtered" if filters else "official_format_full",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "row_count": len(publications_df),
+        "exported_row_count": len(publications_df) - len(unexported),
+        "unexported": unexported,
         "actor": actor,
         "template_path": str(template_file),
         "filters": {

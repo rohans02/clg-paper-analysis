@@ -392,3 +392,135 @@ def test_approve_submission_handles_integrity_conflict_without_partial_insert(se
     refreshed = session.get(PendingSubmission, submission.id)
     assert refreshed is not None
     assert refreshed.status == SubmissionStatus.UNDER_REVIEW.value
+
+
+def test_soft_duplicate_is_case_insensitive_and_tolerates_missing_date(session):
+    first = create_submission(
+        session=session,
+        submitted_by="faculty1",
+        source_input="manual",
+        source_input_method=InputMethod.MANUAL,
+        payload=_payload("10.1000/case"),
+        confidence_score=0.8,
+    )
+    approve_submission(session, first.id, "admin1")
+
+    resubmitted = _payload(None)
+    resubmitted["title"] = "  PAPER a "
+    resubmitted["faculty_name"] = "dr. a"
+    resubmitted["pub_date"] = None
+    second = create_submission(
+        session=session,
+        submitted_by="faculty1",
+        source_input="manual",
+        source_input_method=InputMethod.MANUAL,
+        payload=resubmitted,
+        confidence_score=0.8,
+    )
+    result = approve_submission(session, second.id, "admin1")
+    assert result.soft_duplicate is True
+    assert result.publication_id is None
+
+
+def test_soft_duplicate_not_flagged_when_years_differ(session):
+    first = create_submission(
+        session=session,
+        submitted_by="faculty1",
+        source_input="manual",
+        source_input_method=InputMethod.MANUAL,
+        payload=_payload("10.1000/y1"),
+        confidence_score=0.8,
+    )
+    approve_submission(session, first.id, "admin1")
+
+    later = _payload(None)
+    later["pub_date"] = "2026-03-01"
+    second = create_submission(
+        session=session,
+        submitted_by="faculty1",
+        source_input="manual",
+        source_input_method=InputMethod.MANUAL,
+        payload=later,
+        confidence_score=0.8,
+    )
+    result = approve_submission(session, second.id, "admin1")
+    assert result.soft_duplicate is False
+    assert result.publication_id is not None
+
+
+def _book_template(tmp_path: Path) -> Path:
+    template = Workbook()
+    ws = template.active
+    ws.title = "Book ChapterBook"
+    ws["A1"] = "Book / Book Chapter"
+    ws["A2"] = "Sr. No."
+    ws["B2"] = "Name of Faculty"
+    ws["D2"] = "Title of Book/ Book Chapter"
+    ws["A3"] = 1
+    ws["B3"] = "placeholder"
+    path = tmp_path / "book_template.xlsx"
+    template.save(path)
+    return path
+
+
+def test_book_chapter_submitted_with_ui_label_is_stored_and_exported_as_book(session, tmp_path: Path):
+    submission = create_submission(
+        session=session,
+        submitted_by="faculty1",
+        source_input="manual",
+        source_input_method=InputMethod.MANUAL,
+        payload={
+            "faculty_name": "Dr. C",
+            "title": "Chapter Title C",
+            "authors": "C1",
+            "publication_name": "Some Book",
+            "category": "Book Chapter",
+            "publication_type": "Book Chapter",
+            "publisher": "Springer",
+            "issn_isbn": "978-1",
+            "pub_date": "2025-06-01",
+        },
+        confidence_score=0.5,
+    )
+    result = approve_submission(session, submission.id, "admin1")
+    assert result.publication_id is not None
+    stored = session.get(PublicationCore, result.publication_id)
+    assert stored.category == "Book"
+    assert session.get(Publication, result.publication_id).category == "Book"
+
+    payload, meta = export_official_format_xlsx(session, "admin1", str(_book_template(tmp_path)))
+    assert meta["row_count"] == 1
+    assert meta["exported_row_count"] == 1
+    assert meta["unexported"] == []
+    out = tmp_path / "book_out.xlsx"
+    out.write_bytes(payload)
+    wb = load_workbook(out)
+    assert wb["Book ChapterBook"]["B3"].value == "Dr. C"
+    assert wb["Book ChapterBook"]["D3"].value == "Chapter Title C"
+    assert wb["Book ChapterBook"]["F3"].value == "Springer"
+
+
+def test_export_reports_rows_with_no_official_sheet(session, tmp_path: Path):
+    submission = create_submission(
+        session=session,
+        submitted_by="faculty1",
+        source_input="manual",
+        source_input_method=InputMethod.MANUAL,
+        payload={
+            "faculty_name": "Dr. O",
+            "title": "Unclassified Paper",
+            "authors": "O1",
+            "category": "Other",
+            "publication_type": "Journal",
+            "venue": "Local Journal",
+        },
+        confidence_score=0.5,
+    )
+    approve_submission(session, submission.id, "admin1")
+
+    _, meta = export_official_format_xlsx(session, "admin1", str(_book_template(tmp_path)))
+    assert meta["row_count"] == 1
+    assert meta["exported_row_count"] == 0
+    assert len(meta["unexported"]) == 1
+    assert meta["unexported"][0]["title"] == "Unclassified Paper"
+    assert meta["unexported"][0]["category"] == "Other"

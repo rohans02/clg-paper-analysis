@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from publication_manager.migration import load_migration_status
+from publication_manager.taxonomy import ALLOWED_CATEGORIES
 
 
 @dataclass
@@ -137,7 +138,7 @@ def run_system_checks(
         text(
             f"SELECT COUNT(*) FROM {publication_table} "
             "WHERE category IS NOT NULL AND trim(category) <> '' "
-            "AND category NOT IN ('Scopus','WoS','UGC Care','Peer Reviewed','Book','International Conference','National Conference')"
+            f"AND category NOT IN ({', '.join(repr(c) for c in sorted(ALLOWED_CATEGORIES))})"
         )
     ).scalar() or 0
     results.append(
