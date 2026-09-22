@@ -27,7 +27,7 @@ pip install -r requirements.txt
 ### Step 5: Configure Admin Password
 Create a file at `.streamlit/secrets.toml` with:
 ```
-ADMIN_PASSWORD = "mmcoe"
+ADMIN_PASSWORD = "choose-a-strong-password"
 ```
 
 ### Step 6: Run the App
