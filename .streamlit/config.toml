@@ -4,3 +4,14 @@ backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F5F7FA"
 textColor = "#212121"
 font = "sans serif"
+# Root size for text and rem-based spacing; default is 16. 18 is about 10% larger.
+baseFontSize = 18
+
+[client]
+# Never show tracebacks or file paths to visitors; details still go to the log.
+showErrorDetails = "none"
+# Hide the developer toolbar (deploy button, rerun, settings) from viewers.
+toolbarMode = "minimal"
+
+[server]
+maxUploadSize = 20
