@@ -288,6 +288,7 @@ def _init_state() -> None:
         "auth_is_authenticated": False,
         "auth_role": None,
         "auth_username": None,
+        "auth_token": None,
         "ingestion_payload": {},
         "ingestion_warnings": [],
         "ingestion_confidence": 0.0,
@@ -330,6 +331,7 @@ def _init_state() -> None:
             st.session_state["auth_is_authenticated"] = True
             st.session_state["auth_role"] = role
             st.session_state["auth_username"] = user
+            st.session_state["auth_token"] = {key: str(qp.get(key)) for key in ("role", "user", "ts", "sig")}
         elif any(qp.get(key) for key in ("role", "user", "ts", "sig")):
             st.query_params.clear()
 
@@ -399,15 +401,33 @@ def _client_key() -> str:
 
 
 def _persist_login(role: str, username: str) -> None:
+    token = sign_session(_auth_secret(), role, username)
     st.session_state["auth_is_authenticated"] = True
     st.session_state["auth_role"] = role
     st.session_state["auth_username"] = username
+    st.session_state["auth_token"] = token
     st.query_params.clear()
-    st.query_params.update(sign_session(_auth_secret(), role, username))
+    st.query_params.update(token)
+
+
+def _keep_token_in_url() -> None:
+    """Page navigation drops query parameters, and the login token lives there.
+
+    Re-attach the stored token whenever it is missing so a browser refresh on any
+    page still finds a valid sign-in instead of landing on "page not found".
+    """
+    token = st.session_state.get("auth_token")
+    if not token:
+        return
+    if any(st.query_params.get(key) != token.get(key) for key in ("role", "user", "ts", "sig")):
+        st.query_params.update(token)
 
 
 def _logout() -> None:
     revoke_session({key: st.query_params.get(key) for key in ("role", "user", "ts", "sig")})
+    if st.session_state.get("auth_token"):
+        revoke_session(st.session_state["auth_token"])
+    st.session_state["auth_token"] = None
     st.session_state["auth_is_authenticated"] = False
     st.session_state["auth_role"] = None
     st.session_state["auth_username"] = None
@@ -1877,6 +1897,7 @@ def main() -> None:
 
     role = str(st.session_state["auth_role"])
     username = str(st.session_state["auth_username"])
+    _keep_token_in_url()
     pages = _pages_for_role(role)
     current = st.navigation(pages, position="hidden")
     _render_app_bar(username, role, pages, current)
